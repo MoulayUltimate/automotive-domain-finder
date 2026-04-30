@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Automotive Domain Finder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { DEFAULT: '#f97316', dark: '#ea580c', light: '#fb923c' },
+          },
+          fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    [x-cloak] { display: none !important; }
+    .spin { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    input[type=range] { accent-color: #f97316; }
+  </style>
+</head>
+
+<body class="h-full bg-slate-950 text-slate-200 font-sans antialiased">
+<div x-data="app()" x-cloak class="flex flex-col h-full">
+
+  <!-- ── HEADER ────────────────────────────────────────────────────── -->
+  <header class="shrink-0 border-b border-slate-800 bg-slate-900/80 backdrop-blur px-6 py-3 flex items-center gap-3">
+    <svg class="w-7 h-7 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+      <path stroke-linecap="round" stroke-linejoin="round"
+        d="M8.25 18.75a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 0 1-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 0 0-3.213-9.193 2.056 2.056 0 0 0-1.58-.86H14.25M16.5 18.75h-2.25m0-11.177v-.958c0-.568-.422-1.048-.987-1.106a48.554 48.554 0 0 0-10.026 0 1.106 1.106 0 0 0-.987 1.106v7.635m12-6.677v6.677m0 4.5v-4.5m0 0h-12" />
+    </svg>
+    <h1 class="text-lg font-bold tracking-tight">Automotive Domain Finder</h1>
+    <span class="text-xs text-slate-500 mt-0.5">Expired domain hunter for the car niche</span>
+    <div class="ml-auto flex items-center gap-2 text-xs text-slate-500">
+      <span x-show="results.length" x-text="`${results.length} results`" class="text-brand font-medium"></span>
+      <a href="https://github.com" target="_blank" class="hover:text-slate-300 transition-colors">Docs</a>
+    </div>
+  </header>
+
+  <!-- ── BODY ─────────────────────────────────────────────────────── -->
+  <div class="flex flex-1 min-h-0">
+
+    <!-- ── SIDEBAR ─────────────────────────────────────────────── -->
+    <aside class="w-80 shrink-0 border-r border-slate-800 bg-slate-900 flex flex-col overflow-y-auto">
+      <div class="p-4 space-y-5">
+
+        <!-- Domain Input -->
+        <section>
+          <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            Domain List
+          </label>
+          <textarea
+            x-model="domainsText"
+            rows="7"
+            placeholder="Paste domains here, one per line&#10;&#10;example.com&#10;motortrend.net&#10;autoguide.org"
+            class="w-full rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 placeholder-slate-600
+                   px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-brand"
+          ></textarea>
+          <div class="flex items-center gap-2 mt-2">
+            <label class="flex-1 cursor-pointer rounded-md border border-slate-700 bg-slate-800 hover:bg-slate-750
+                          text-xs text-slate-400 text-center py-1.5 transition-colors">
+              Upload .txt / .csv
+              <input type="file" accept=".txt,.csv" class="sr-only" @change="handleFileUpload($event)" />
+            </label>
+            <button @click="domainsText=''" class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+              Clear
+            </button>
+          </div>
+          <p class="text-xs text-slate-500 mt-1">
+            <span class="text-slate-300 font-medium" x-text="parsedDomains.length"></span> domains loaded
+          </p>
+        </section>
+
+        <hr class="border-slate-800" />
+
+        <!-- Filters -->
+        <section>
+          <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+            Result Filters
+          </label>
+          <div class="space-y-3">
+            <template x-for="f in filterDefs" :key="f.key">
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-slate-300" x-text="f.label"></span>
+                  <span class="text-brand font-mono font-medium" x-text="filters[f.key]"></span>
+                </div>
+                <input type="range" class="w-full h-1.5 rounded"
+                  :min="f.min" :max="f.max" :step="f.step || 1"
+                  x-model.number="filters[f.key]" />
+                <div class="flex justify-between text-xs text-slate-600 mt-0.5">
+                  <span x-text="f.min"></span><span x-text="f.max"></span>
+                </div>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <hr class="border-slate-800" />
+
+        <!-- Processing options -->
+        <section>
+          <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+            Processing Options
+          </label>
+          <div class="space-y-3">
+            <!-- Fast mode toggle -->
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm text-slate-300">Fast Filter</p>
+                <p class="text-xs text-slate-500">Keyword-only, no page fetch</p>
+              </div>
+              <button @click="opts.fastMode = !opts.fastMode"
+                :class="opts.fastMode ? 'bg-brand' : 'bg-slate-700'"
+                class="relative w-10 h-5 rounded-full transition-colors">
+                <span :class="opts.fastMode ? 'translate-x-5' : 'translate-x-0.5'"
+                  class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
+              </button>
+            </div>
+            <!-- Skip SEO toggle -->
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm text-slate-300">Skip API SEO</p>
+                <p class="text-xs text-slate-500">Wayback + index only (faster)</p>
+              </div>
+              <button @click="opts.skipSEO = !opts.skipSEO"
+                :class="opts.skipSEO ? 'bg-brand' : 'bg-slate-700'"
+                class="relative w-10 h-5 rounded-full transition-colors">
+                <span :class="opts.skipSEO ? 'translate-x-5' : 'translate-x-0.5'"
+                  class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
+              </button>
+            </div>
+            <!-- Workers -->
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-300">Parallel Workers</span>
+                <span class="text-brand font-mono font-medium" x-text="opts.workers"></span>
+              </div>
+              <input type="range" class="w-full h-1.5 rounded" min="1" max="20" step="1"
+                x-model.number="opts.workers" />
+            </div>
+            <!-- Max domain length -->
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-300">Max Domain Length</span>
+                <span class="text-brand font-mono font-medium" x-text="opts.maxDomainLength"></span>
+              </div>
+              <input type="range" class="w-full h-1.5 rounded" min="5" max="63" step="1"
+                x-model.number="opts.maxDomainLength" />
+            </div>
+          </div>
+        </section>
+
+        <hr class="border-slate-800" />
+
+        <!-- API Keys -->
+        <section>
+          <button @click="showApiKeys = !showApiKeys"
+            class="flex items-center justify-between w-full text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
+            <span>API Keys <span class="text-slate-600 normal-case font-normal">(optional)</span></span>
+            <svg :class="showApiKeys ? 'rotate-180' : ''" class="w-4 h-4 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+            </svg>
+          </button>
+          <div x-show="showApiKeys" x-transition class="space-y-2 pt-2">
+            <template x-for="k in apiKeyDefs" :key="k.key">
+              <div>
+                <label class="text-xs text-slate-500 block mb-0.5" x-text="k.label"></label>
+                <input :type="k.secret ? 'password' : 'text'" x-model="apiKeys[k.key]"
+                  :placeholder="k.placeholder"
+                  class="w-full rounded-md bg-slate-800 border border-slate-700 text-xs text-slate-200
+                         placeholder-slate-600 px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand" />
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <!-- RUN button -->
+        <button
+          @click="run()"
+          :disabled="running || !parsedDomains.length"
+          :class="running || !parsedDomains.length
+            ? 'opacity-40 cursor-not-allowed bg-slate-700'
+            : 'bg-brand hover:bg-brand-dark active:scale-95'"
+          class="w-full py-2.5 rounded-lg text-sm font-semibold text-white transition-all shadow-lg">
+          <span x-show="!running">Run Pipeline</span>
+          <span x-show="running" class="flex items-center justify-center gap-2">
+            <svg class="spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+            </svg>
+            Running…
+          </span>
+        </button>
+
+      </div><!-- /p-4 -->
+    </aside><!-- /sidebar -->
+
+    <!-- ── MAIN ────────────────────────────────────────────────── -->
+    <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+      <!-- Pipeline Progress -->
+      <div class="shrink-0 border-b border-slate-800 bg-slate-900/40 px-6 py-4">
+        <div class="grid grid-cols-4 gap-3">
+          <template x-for="(step, i) in steps" :key="i">
+            <div :class="{
+                'border-brand/60 bg-brand/5':   step.status === 'done',
+                'border-blue-500/60 bg-blue-500/5': step.status === 'running',
+                'border-red-500/60 bg-red-500/5':   step.status === 'error',
+                'border-slate-700 bg-slate-800/30': step.status === 'idle',
+              }"
+              class="rounded-xl border p-3 transition-all">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <p class="text-xs text-slate-500 font-medium" x-text="`Step ${i+3}`"></p>
+                  <p class="text-sm font-semibold text-slate-200 mt-0.5" x-text="step.label"></p>
+                </div>
+                <!-- Status icon -->
+                <div class="mt-0.5 shrink-0">
+                  <!-- idle -->
+                  <div x-show="step.status === 'idle'" class="w-5 h-5 rounded-full border-2 border-slate-600"></div>
+                  <!-- running -->
+                  <svg x-show="step.status === 'running'" class="spin w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                  </svg>
+                  <!-- done -->
+                  <svg x-show="step.status === 'done'" class="w-5 h-5 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+                  </svg>
+                  <!-- error -->
+                  <svg x-show="step.status === 'error'" class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                  </svg>
+                </div>
+              </div>
+              <p class="text-xs mt-2 min-h-[1.2rem] leading-snug"
+                :class="{
+                  'text-brand':    step.status === 'done',
+                  'text-blue-400': step.status === 'running',
+                  'text-red-400':  step.status === 'error',
+                  'text-slate-600':step.status === 'idle',
+                }"
+                x-text="step.detail || '—'"></p>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Results area -->
+      <div class="flex-1 overflow-auto">
+
+        <!-- Empty state -->
+        <div x-show="!results.length && !running"
+          class="flex flex-col items-center justify-center h-full gap-4 text-slate-600">
+          <svg class="w-16 h-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
+              d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          <div class="text-center">
+            <p class="text-lg font-medium text-slate-500">No results yet</p>
+            <p class="text-sm mt-1">Paste a domain list and click <span class="text-brand">Run Pipeline</span></p>
+          </div>
+        </div>
+
+        <!-- Results table -->
+        <div x-show="results.length" class="fade-in">
+          <!-- Toolbar -->
+          <div class="sticky top-0 z-10 flex items-center gap-3 px-6 py-3 bg-slate-950 border-b border-slate-800">
+            <span class="text-sm font-medium text-slate-300">
+              <span class="text-brand font-bold" x-text="sortedResults.length"></span> domains ranked
+            </span>
+            <div class="flex-1"></div>
+            <!-- Column visibility -->
+            <div class="relative" x-data="{ open: false }">
+              <button @click="open = !open"
+                class="text-xs text-slate-400 hover:text-slate-200 border border-slate-700 rounded-md px-2.5 py-1.5 transition-colors">
+                Columns
+              </button>
+              <div x-show="open" @click.outside="open=false"
+                class="absolute right-0 mt-1 w-48 bg-slate-800 border border-slate-700 rounded-xl shadow-xl p-2 z-20 space-y-1">
+                <template x-for="col in colDefs" :key="col.key">
+                  <label class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-slate-700 cursor-pointer">
+                    <input type="checkbox" x-model="col.visible"
+                      class="accent-orange-500 rounded" />
+                    <span class="text-xs text-slate-300" x-text="col.label"></span>
+                  </label>
+                </template>
+              </div>
+            </div>
+            <!-- Export CSV -->
+            <button @click="exportCSV()"
+              class="text-xs text-slate-900 bg-brand hover:bg-brand-dark rounded-md px-3 py-1.5 font-semibold transition-colors">
+              Export CSV
+            </button>
+          </div>
+
+          <!-- Table -->
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left border-collapse">
+              <thead>
+                <tr class="border-b border-slate-800 bg-slate-900/60">
+                  <th class="px-4 py-2.5 text-xs font-semibold text-slate-500 w-10">#</th>
+                  <th class="px-4 py-2.5 text-xs font-semibold text-slate-500">Domain</th>
+                  <template x-for="col in visibleCols" :key="col.key">
+                    <th @click="setSort(col.key)"
+                      class="px-4 py-2.5 text-xs font-semibold text-slate-500 cursor-pointer select-none hover:text-slate-300 whitespace-nowrap transition-colors">
+                      <span x-text="col.label"></span>
+                      <span x-show="sortCol === col.key" class="ml-1"
+                        x-text="sortDir === 'desc' ? '↓' : '↑'"></span>
+                    </th>
+                  </template>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row, idx) in sortedResults" :key="row.domain">
+                  <tr class="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors group">
+                    <td class="px-4 py-2.5 text-xs text-slate-600 tabular-nums" x-text="idx + 1"></td>
+                    <td class="px-4 py-2.5">
+                      <div class="flex items-center gap-2">
+                        <a :href="`https://${row.domain}`" target="_blank"
+                          class="text-slate-200 font-medium hover:text-brand transition-colors"
+                          x-text="row.domain"></a>
+                        <button @click="navigator.clipboard.writeText(row.domain)"
+                          title="Copy"
+                          class="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-slate-300 transition-all">
+                          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                          </svg>
+                        </button>
+                      </div>
+                    </td>
+                    <template x-for="col in visibleCols" :key="col.key">
+                      <td class="px-4 py-2.5 text-xs tabular-nums whitespace-nowrap"
+                        :class="col.class ? col.class(row) : 'text-slate-400'"
+                        x-html="col.render ? col.render(row) : (row[col.key] ?? '—')">
+                      </td>
+                    </template>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div><!-- /results area -->
+    </main>
+  </div><!-- /body -->
+</div><!-- /app -->
+
+<script>
+function app() {
+  return {
+    // ── Input ────────────────────────────────────────────────────────────────
+    domainsText: '',
+
+    // ── Filters ──────────────────────────────────────────────────────────────
+    filters: {
+      minScore:    25,
+      minDA:        0,
+      minTF:        0,
+      minOPR:       0,
+      minWayback:   5,
+      minBacklinks: 0,
+    },
+
+    filterDefs: [
+      { key: 'minScore',    label: 'Min SEO Score',        min: 0,  max: 100, step: 1  },
+      { key: 'minDA',       label: 'Min Domain Authority', min: 0,  max: 100, step: 1  },
+      { key: 'minTF',       label: 'Min Trust Flow',       min: 0,  max: 100, step: 1  },
+      { key: 'minOPR',      label: 'Min OpenPageRank',     min: 0,  max: 10,  step: 1  },
+      { key: 'minWayback',  label: 'Min Wayback Snapshots',min: 0,  max: 500, step: 5  },
+      { key: 'minBacklinks',label: 'Min Backlinks',        min: 0,  max: 10000, step: 50},
+    ],
+
+    // ── Options ───────────────────────────────────────────────────────────────
+    opts: {
+      fastMode:        true,
+      skipSEO:         false,
+      workers:         5,
+      maxDomainLength: 35,
+    },
+
+    // ── API Keys ─────────────────────────────────────────────────────────────
+    showApiKeys: false,
+    apiKeys: { oprKey: '', majesticKey: '', mozId: '', mozSecret: '' },
+    apiKeyDefs: [
+      { key: 'oprKey',      label: 'OpenPageRank Key',   placeholder: 'Free at openpagerank.com', secret: false },
+      { key: 'majesticKey', label: 'Majestic API Key',   placeholder: 'developer.majestic.com',   secret: false },
+      { key: 'mozId',       label: 'Moz Access ID',      placeholder: 'moz.com/products/api',     secret: false },
+      { key: 'mozSecret',   label: 'Moz Secret Key',     placeholder: '••••••••••••',             secret: true  },
+    ],
+
+    // ── Pipeline state ────────────────────────────────────────────────────────
+    running: false,
+    steps: [
+      { label: 'Automotive Filter', status: 'idle', detail: '' },
+      { label: 'Availability Check', status: 'idle', detail: '' },
+      { label: 'SEO Signals',        status: 'idle', detail: '' },
+      { label: 'Score & Rank',       status: 'idle', detail: '' },
+    ],
+
+    // ── Results ────────────────────────────────────────────────────────────────
+    results: [],
+    sortCol: 'seo_score',
+    sortDir: 'desc',
+
+    // ── Column definitions ────────────────────────────────────────────────────
+    colDefs: [
+      {
+        key: 'seo_score', label: 'Score', visible: true,
+        class: r => r.seo_score >= 60 ? 'text-green-400 font-semibold'
+                 : r.seo_score >= 35 ? 'text-brand font-semibold'
+                 : 'text-slate-400',
+      },
+      {
+        key: 'domain_authority', label: 'DA', visible: true,
+        class: r => r.domain_authority >= 30 ? 'text-green-400 font-semibold'
+                 : r.domain_authority >= 10 ? 'text-brand'
+                 : 'text-slate-500',
+      },
+      {
+        key: 'trust_flow', label: 'TF', visible: true,
+        class: r => r.trust_flow >= 20 ? 'text-green-400 font-semibold'
+                 : r.trust_flow > 0   ? 'text-slate-300'
+                 : 'text-slate-600',
+      },
+      {
+        key: 'citation_flow', label: 'CF', visible: false,
+        class: () => 'text-slate-400',
+      },
+      {
+        key: 'backlinks', label: 'Backlinks', visible: true,
+        render: r => r.backlinks ? r.backlinks.toLocaleString() : '—',
+        class: r => r.backlinks >= 1000 ? 'text-green-400' : r.backlinks > 0 ? 'text-slate-300' : 'text-slate-600',
+      },
+      {
+        key: 'ref_domains', label: 'Ref Domains', visible: false,
+        render: r => r.ref_domains ? r.ref_domains.toLocaleString() : '—',
+        class: () => 'text-slate-400',
+      },
+      {
+        key: 'page_rank_integer', label: 'OPR', visible: true,
+        class: r => r.page_rank_integer >= 4 ? 'text-green-400 font-semibold'
+                 : r.page_rank_integer > 0   ? 'text-slate-300'
+                 : 'text-slate-600',
+      },
+      {
+        key: 'wayback_snapshots', label: 'WB Snapshots', visible: true,
+        render: r => r.wayback_snapshots ? r.wayback_snapshots.toLocaleString() : '—',
+        class: r => r.wayback_snapshots >= 100 ? 'text-green-400 font-semibold'
+                 : r.wayback_snapshots >= 20   ? 'text-brand'
+                 : r.wayback_snapshots > 0     ? 'text-slate-400'
+                 : 'text-slate-600',
+      },
+      {
+        key: 'wayback_first_seen', label: 'First Seen', visible: true,
+        render: r => r.wayback_first_seen
+          ? `<span title="First archived">${r.wayback_first_seen.slice(0,4)}</span>`
+          : '—',
+        class: () => 'text-slate-400',
+      },
+      {
+        key: 'is_indexed_ddg', label: 'Indexed', visible: true,
+        render: r => r.is_indexed_ddg
+          ? `<span class="text-green-400">✓</span>`
+          : `<span class="text-slate-700">—</span>`,
+      },
+      {
+        key: 'in_commoncrawl', label: 'CC', visible: false,
+        render: r => r.in_commoncrawl
+          ? `<span class="text-green-400">✓</span>`
+          : `<span class="text-slate-700">—</span>`,
+      },
+      {
+        key: 'expiry_date', label: 'Expiry', visible: true,
+        render: r => r.expiry_date
+          ? r.expiry_date.slice(0, 10)
+          : '—',
+        class: r => {
+          if (!r.expiry_date) return 'text-slate-600';
+          const d = new Date(r.expiry_date);
+          const daysLeft = (d - Date.now()) / 86400000;
+          return daysLeft < 30 ? 'text-red-400 font-semibold' : 'text-slate-400';
+        },
+      },
+      {
+        key: 'registrar', label: 'Registrar', visible: false,
+        class: () => 'text-slate-500 max-w-xs truncate',
+      },
+      {
+        key: 'score_wayback', label: 'Score WB', visible: false,
+        class: () => 'text-slate-500',
+      },
+      {
+        key: 'score_backlinks', label: 'Score BL', visible: false,
+        class: () => 'text-slate-500',
+      },
+      {
+        key: 'score_domain_name', label: 'Score Name', visible: false,
+        class: () => 'text-slate-500',
+      },
+    ],
+
+    // ── Computed ──────────────────────────────────────────────────────────────
+    get parsedDomains() {
+      return this.domainsText
+        .split(/[\n,]+/)
+        .map(d => d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, ''))
+        .filter(d => d && d.includes('.') && !d.startsWith('#'));
+    },
+
+    get visibleCols() {
+      return this.colDefs.filter(c => c.visible);
+    },
+
+    get sortedResults() {
+      const dir = this.sortDir === 'desc' ? -1 : 1;
+      const col = this.sortCol;
+      return [...this.results].sort((a, b) => {
+        const av = a[col] ?? 0;
+        const bv = b[col] ?? 0;
+        if (typeof av === 'string') return dir * av.localeCompare(bv);
+        return dir * (bv - av);
+      });
+    },
+
+    // ── Pipeline ──────────────────────────────────────────────────────────────
+    async run() {
+      if (!this.parsedDomains.length || this.running) return;
+      this.running = true;
+      this.results = [];
+      this.steps.forEach(s => { s.status = 'idle'; s.detail = ''; });
+
+      try {
+        // Step 3 — Automotive filter
+        this.steps[0].status = 'running';
+        this.steps[0].detail = `Analysing ${this.parsedDomains.length} domains…`;
+        const filterRes = await this._call('/api/filter', {
+          domains: this.parsedDomains,
+          fast:    this.opts.fastMode,
+          workers: this.opts.workers,
+        });
+        const relevance = Object.fromEntries(filterRes.filtered);
+        const filteredDomains = filterRes.filtered.map(([d]) => d);
+        this.steps[0].status = 'done';
+        this.steps[0].detail = `${filteredDomains.length} automotive domains identified`;
+
+        if (!filteredDomains.length) {
+          this.steps[1].detail = 'Nothing to check';
+          this.steps[2].detail = 'Skipped';
+          this.steps[3].detail = 'No results';
+          return;
+        }
+
+        // Step 4 — Availability check
+        this.steps[1].status = 'running';
+        this.steps[1].detail = `Checking ${filteredDomains.length} domains…`;
+        const checkRes = await this._call('/api/check', {
+          domains: filteredDomains,
+          workers: this.opts.workers,
+        });
+        const available = checkRes.available;
+        const availableDomains = available.map(a => a.domain);
+        this.steps[1].status = 'done';
+        this.steps[1].detail = `${availableDomains.length} available for registration`;
+
+        if (!availableDomains.length) {
+          this.steps[2].detail = 'Nothing to analyse';
+          this.steps[3].detail = 'No results';
+          return;
+        }
+
+        // Step 5 — SEO signals
+        this.steps[2].status = 'running';
+        this.steps[2].detail = `Fetching SEO data for ${availableDomains.length} domains…`;
+        const seoRes = await this._call('/api/seo', {
+          domains:          availableDomains,
+          workers:          this.opts.workers,
+          no_seo:           this.opts.skipSEO,
+          openpagerank_key: this.apiKeys.oprKey,
+          majestic_key:     this.apiKeys.majesticKey,
+          moz_id:           this.apiKeys.mozId,
+          moz_secret:       this.apiKeys.mozSecret,
+        });
+        // Merge availability data into signals
+        const availMap = {};
+        available.forEach(a => availMap[a.domain] = a);
+        const mergedSignals = seoRes.signals.map(sig => ({
+          ...availMap[sig.domain],
+          ...sig,
+        }));
+        this.steps[2].status = 'done';
+        this.steps[2].detail = `SEO signals gathered for ${mergedSignals.length} domains`;
+
+        // Step 6 — Score & rank
+        this.steps[3].status = 'running';
+        this.steps[3].detail = 'Scoring and ranking…';
+        const scoreRes = await this._call('/api/score', {
+          signals:           mergedSignals,
+          relevance:         relevance,
+          min_score:         this.filters.minScore,
+          min_da:            this.filters.minDA,
+          min_tf:            this.filters.minTF,
+          min_opr:           this.filters.minOPR,
+          min_wayback:       this.filters.minWayback,
+          min_backlinks:     this.filters.minBacklinks,
+          max_domain_length: this.opts.maxDomainLength,
+        });
+        this.results = scoreRes.scored;
+        this.steps[3].status = 'done';
+        this.steps[3].detail = `${this.results.length} domains passed all filters`;
+
+      } catch (err) {
+        const failing = this.steps.find(s => s.status === 'running');
+        if (failing) { failing.status = 'error'; failing.detail = err.message; }
+        console.error(err);
+      } finally {
+        this.running = false;
+      }
+    },
+
+    async _call(url, body) {
+      const res = await fetch(url, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      if (!res.ok) {
+        let msg = `API error ${res.status}`;
+        try { msg = (await res.json()).detail || msg; } catch (_) {}
+        throw new Error(msg);
+      }
+      return res.json();
+    },
+
+    // ── File upload ───────────────────────────────────────────────────────────
+    handleFileUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = e => { this.domainsText = e.target.result; };
+      reader.readAsText(file);
+      event.target.value = '';  // allow re-upload of same file
+    },
+
+    // ── Sort ──────────────────────────────────────────────────────────────────
+    setSort(col) {
+      if (this.sortCol === col) {
+        this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc';
+      } else {
+        this.sortCol = col;
+        this.sortDir = 'desc';
+      }
+    },
+
+    // ── CSV export ────────────────────────────────────────────────────────────
+    exportCSV() {
+      if (!this.results.length) return;
+      const cols = [
+        'domain','seo_score','domain_authority','trust_flow','citation_flow',
+        'backlinks','ref_domains','page_rank_integer','wayback_snapshots',
+        'wayback_first_seen','wayback_last_seen','is_indexed_ddg','in_commoncrawl',
+        'expiry_date','registrar','check_method','auto_relevance_score',
+        'score_wayback','score_backlinks','score_domain_name','score_indexed',
+      ];
+      const escape = v => {
+        if (v == null) return '';
+        const s = String(v);
+        return s.includes(',') || s.includes('"') || s.includes('\n')
+          ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const rows = [cols, ...this.sortedResults.map(r => cols.map(c => escape(r[c])))];
+      const csv  = rows.map(r => r.join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = 'automotive_domains.csv'; a.click();
+      URL.revokeObjectURL(url);
+    },
+  };
+}
+</script>
+</body>
+</html>

@@ -6,9 +6,18 @@ from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-OUTPUT_DIR = BASE_DIR / "output"
-LOGS_DIR = BASE_DIR / "logs"
+
+# On Vercel (and other serverless platforms) the project root is read-only;
+# only /tmp is writable.  Set VERCEL=1 (Vercel sets this automatically) or
+# ADF_WRITABLE_ROOT to redirect cache/output to a writable location.
+import os as _os
+_writable = Path(_os.environ["ADF_WRITABLE_ROOT"]) if _os.environ.get("ADF_WRITABLE_ROOT") else (
+    Path("/tmp") if _os.environ.get("VERCEL") else BASE_DIR
+)
+
+DATA_DIR   = _writable / "adf_data"
+OUTPUT_DIR = _writable / "adf_output"
+LOGS_DIR   = _writable / "adf_logs"
 
 for d in (DATA_DIR, OUTPUT_DIR, LOGS_DIR):
     d.mkdir(parents=True, exist_ok=True)
