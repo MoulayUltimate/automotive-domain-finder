@@ -23,9 +23,6 @@ pandas>=2.2.0        # optional, only used if you enable pandas export
 fake-useragent>=1.5.1  # extra UA rotation (optional, falls back to config list)
 tqdm>=4.66.0           # progress bars
 
-# Supabase auth (server-side: admin API + JWT verification)
-supabase>=2.4.0
-
 # Optional: Playwright for JS-heavy blogs
 # Install separately: pip install playwright && playwright install chromium
 # playwright>=1.43.0
