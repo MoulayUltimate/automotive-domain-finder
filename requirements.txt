@@ -1,0 +1,22 @@
+# Core HTTP & parsing
+requests>=2.31.0
+urllib3>=2.0.0
+beautifulsoup4>=4.12.0
+lxml>=5.1.0          # faster BS4 parser
+
+# WHOIS / domain availability
+python-whois>=0.9.4
+
+# Async support (used internally by some helpers)
+aiohttp>=3.9.0
+
+# Data handling
+pandas>=2.2.0        # optional, only used if you enable pandas export
+
+# Utilities
+fake-useragent>=1.5.1  # extra UA rotation (optional, falls back to config list)
+tqdm>=4.66.0           # progress bars
+
+# Optional: Playwright for JS-heavy blogs
+# Install separately: pip install playwright && playwright install chromium
+# playwright>=1.43.0

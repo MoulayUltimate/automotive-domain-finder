@@ -1,0 +1,60 @@
+# Seed automotive blogs — one domain per line
+# The tool will discover more automatically, but these guarantee a solid start.
+# Lines starting with # are ignored.
+
+# ── USA ───────────────────────────────────────────────────────────────────────
+motortrend.com
+caranddriver.com
+roadandtrack.com
+autoweek.com
+thedrive.com
+jalopnik.com
+autoblog.com
+carbuzz.com
+thecarconnection.com
+motorauthority.com
+greencarreports.com
+torquenews.com
+automobilemag.com
+popularmechanics.com
+consumerreports.org
+extremetech.com
+wheelsjoint.com
+carscoops.com
+autoguide.com
+carreviews.com
+drivetribe.com
+automobile-mag.com
+motorengineer.net
+autoreview.com
+carkeys.co.uk
+speedhunters.com
+hotrod.com
+supercars.net
+motortrend.com
+hemmings.com
+bringatrailer.com
+grassrootsmotorsports.com
+rennlist.com
+nasioc.com
+f150forum.com
+corvetteforum.com
+mustang6g.com
+tundratalk.net
+tacomaworld.com
+cargurus.com/reviews
+edmunds.com/car-reviews
+kbb.com/car-reviews
+cars.com/research
+
+# ── Canada ────────────────────────────────────────────────────────────────────
+driving.ca
+wheels.ca
+motortrend.ca
+autotrader.ca/editorial
+canadianautoreview.ca
+autofile.ca
+autodeal.ca
+automotiveonline.ca
+autofocus.ca
+careview.ca
