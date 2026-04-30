@@ -1,3 +1,9 @@
+# Web framework (Vercel serverless API)
+fastapi>=0.110.0
+mangum>=0.17.0       # ASGI -> AWS Lambda / Vercel adapter
+pydantic>=2.6.0
+uvicorn>=0.29.0      # local dev only (not invoked on Vercel)
+
 # Core HTTP & parsing
 requests>=2.31.0
 urllib3>=2.0.0
