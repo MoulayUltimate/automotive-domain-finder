@@ -6,6 +6,7 @@
   <title>Automotive Domain Finder</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script>
     tailwind.config = {
       theme: {
@@ -355,6 +356,14 @@
                               d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                           </svg>
                         </button>
+                        <button @click.prevent="loadHistory(row.domain)"
+                          title="View history"
+                          class="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-brand transition-all">
+                          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                          </svg>
+                        </button>
                       </div>
                     </td>
                     <template x-for="col in visibleCols" :key="col.key">
@@ -373,6 +382,198 @@
       </div><!-- /results area -->
     </main>
   </div><!-- /body -->
+<!-- ── HISTORY MODAL ─────────────────────────────────────────────────────── -->
+<div x-show="showHistory" x-cloak
+  class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-950/80 backdrop-blur"
+  @keydown.escape.window="showHistory=false; destroyCharts()">
+
+  <div class="w-full sm:max-w-4xl bg-slate-900 border border-slate-700 rounded-t-2xl sm:rounded-2xl shadow-2xl
+              flex flex-col max-h-[92vh] sm:max-h-[88vh] fade-in">
+
+    <!-- Modal header -->
+    <div class="flex items-center gap-3 px-6 py-4 border-b border-slate-800 shrink-0">
+      <svg class="w-5 h-5 text-brand shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+      </svg>
+      <div class="flex-1 min-w-0">
+        <h2 class="text-base font-bold text-slate-100 truncate" x-text="historyDomain"></h2>
+        <p class="text-xs text-slate-500">Domain History & Analytics</p>
+      </div>
+      <button @click="showHistory=false; destroyCharts()"
+        class="text-slate-500 hover:text-slate-200 transition-colors p-1">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Modal body -->
+    <div class="flex-1 overflow-y-auto p-6 space-y-5">
+
+      <!-- Loading -->
+      <div x-show="historyLoading" class="flex items-center justify-center py-16 gap-3 text-slate-500">
+        <svg class="spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+        </svg>
+        Fetching archive and SEO history…
+      </div>
+
+      <!-- Content -->
+      <div x-show="historyData && !historyLoading" class="space-y-5">
+
+        <!-- Stats row -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div class="bg-slate-800/50 rounded-xl p-3 border border-slate-700/50">
+            <p class="text-xs text-slate-500">First Seen</p>
+            <p class="text-sm font-bold text-slate-200 mt-1"
+              x-text="historyData?.first_seen ? historyData.first_seen.slice(0,4)+' / '+historyData.first_seen.slice(4,6) : '—'"></p>
+          </div>
+          <div class="bg-slate-800/50 rounded-xl p-3 border border-slate-700/50">
+            <p class="text-xs text-slate-500">Last Archived</p>
+            <p class="text-sm font-bold text-slate-200 mt-1"
+              x-text="historyData?.last_seen ? historyData.last_seen.slice(0,4)+' / '+historyData.last_seen.slice(4,6) : '—'"></p>
+          </div>
+          <div class="bg-slate-800/50 rounded-xl p-3 border border-slate-700/50">
+            <p class="text-xs text-slate-500">Active Years</p>
+            <p class="text-sm font-bold text-slate-200 mt-1"
+              x-text="Object.keys(historyData?.wayback_by_year || {}).length || '—'"></p>
+          </div>
+          <div class="bg-slate-800/50 rounded-xl p-3 border border-slate-700/50">
+            <p class="text-xs text-slate-500">Peak Year</p>
+            <p class="text-sm font-bold text-brand mt-1"
+              x-text="peakYear(historyData?.wayback_by_year)"></p>
+          </div>
+        </div>
+
+        <!-- Archive timeline -->
+        <div class="bg-slate-800/30 rounded-xl p-5 border border-slate-700/40">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="text-sm font-semibold text-slate-200">Archive Activity</h3>
+              <p class="text-xs text-slate-500 mt-0.5">Wayback Machine snapshots per year — proxy for organic presence</p>
+            </div>
+            <span class="text-xs text-slate-600"
+              x-text="`${totalSnapshots(historyData?.wayback_by_year)} total snapshots`"></span>
+          </div>
+          <div x-show="Object.keys(historyData?.wayback_by_year || {}).length" class="h-44 relative">
+            <canvas id="waybackChart"></canvas>
+          </div>
+          <p x-show="!Object.keys(historyData?.wayback_by_year || {}).length"
+            class="text-xs text-slate-600 text-center py-8">No archive data found for this domain.</p>
+        </div>
+
+        <!-- Ahrefs traffic + keywords -->
+        <template x-if="historyData?.ahrefs">
+          <div class="grid sm:grid-cols-2 gap-4">
+            <div class="bg-slate-800/30 rounded-xl p-5 border border-slate-700/40">
+              <div class="flex items-center gap-2 mb-4">
+                <span class="w-2.5 h-2.5 rounded-full bg-green-500 shrink-0"></span>
+                <div>
+                  <h3 class="text-sm font-semibold text-slate-200">Organic Traffic</h3>
+                  <p class="text-xs text-slate-500">via Ahrefs</p>
+                </div>
+              </div>
+              <div class="h-40 relative">
+                <canvas id="ahrefsTrafficChart"></canvas>
+              </div>
+            </div>
+            <div class="bg-slate-800/30 rounded-xl p-5 border border-slate-700/40">
+              <div class="flex items-center gap-2 mb-4">
+                <span class="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0"></span>
+                <div>
+                  <h3 class="text-sm font-semibold text-slate-200">Organic Keywords</h3>
+                  <p class="text-xs text-slate-500">via Ahrefs</p>
+                </div>
+              </div>
+              <div class="h-40 relative">
+                <canvas id="ahrefsKeywordsChart"></canvas>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- Semrush traffic + keywords -->
+        <template x-if="historyData?.semrush && !historyData?.ahrefs">
+          <div class="bg-slate-800/30 rounded-xl p-5 border border-slate-700/40">
+            <div class="flex items-center gap-2 mb-4">
+              <span class="w-2.5 h-2.5 rounded-full bg-green-500 shrink-0"></span>
+              <span class="w-2.5 h-2.5 rounded-full bg-violet-400 shrink-0"></span>
+              <div>
+                <h3 class="text-sm font-semibold text-slate-200">Traffic & Keywords History</h3>
+                <p class="text-xs text-slate-500">via Semrush — <span class="text-green-400">traffic</span> / <span class="text-violet-400">keywords</span></p>
+              </div>
+            </div>
+            <div class="h-48 relative">
+              <canvas id="semrushChart"></canvas>
+            </div>
+          </div>
+        </template>
+
+        <!-- No SEO API connected -->
+        <template x-if="!historyData?.ahrefs && !historyData?.semrush">
+          <div class="rounded-xl border border-dashed border-slate-700 p-5">
+            <div class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-slate-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <div class="flex-1">
+                <h3 class="text-sm font-semibold text-slate-300 mb-1">Traffic & Keyword History</h3>
+                <p class="text-xs text-slate-500 mb-3">Add an Ahrefs or Semrush API key to see real organic traffic and keyword ranking history for this domain.</p>
+                <div class="flex flex-col sm:flex-row gap-2">
+                  <div class="flex-1">
+                    <label class="text-xs text-slate-500 block mb-1">Ahrefs API Key</label>
+                    <input type="password" x-model="apiKeys.ahrefsKey"
+                      placeholder="Bearer token from app.ahrefs.com/api"
+                      class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200
+                             placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-brand" />
+                  </div>
+                  <div class="flex-1">
+                    <label class="text-xs text-slate-500 block mb-1">Semrush API Key</label>
+                    <input type="password" x-model="apiKeys.semrushKey"
+                      placeholder="From semrush.com → Account → API"
+                      class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200
+                             placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-brand" />
+                  </div>
+                  <div class="flex items-end">
+                    <button @click="loadHistory(historyDomain)"
+                      class="w-full sm:w-auto bg-brand hover:bg-brand-dark text-white text-xs font-semibold
+                             px-4 py-1.5 rounded-lg transition-colors whitespace-nowrap">
+                      Reload with keys
+                    </button>
+                  </div>
+                </div>
+                <template x-if="historyData?.ahrefs_error">
+                  <p class="text-xs text-red-400 mt-2" x-text="`Ahrefs: ${historyData.ahrefs_error}`"></p>
+                </template>
+                <template x-if="historyData?.semrush_error">
+                  <p class="text-xs text-red-400 mt-1" x-text="`Semrush: ${historyData.semrush_error}`"></p>
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- Quick links -->
+        <div>
+          <p class="text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Check on other platforms</p>
+          <div class="flex flex-wrap gap-2">
+            <template x-for="link in externalLinks(historyDomain)" :key="link.label">
+              <a :href="link.url" target="_blank" rel="noopener"
+                class="text-xs text-slate-400 hover:text-slate-200 border border-slate-700 hover:border-slate-500
+                       rounded-lg px-3 py-1.5 transition-colors"
+                x-text="link.label"></a>
+            </template>
+          </div>
+        </div>
+
+      </div><!-- /content -->
+    </div><!-- /modal body -->
+  </div>
+</div><!-- /history modal -->
+
 </div><!-- /app -->
 
 <script>
@@ -411,12 +612,14 @@ function app() {
 
     // ── API Keys ─────────────────────────────────────────────────────────────
     showApiKeys: false,
-    apiKeys: { oprKey: '', majesticKey: '', mozId: '', mozSecret: '' },
+    apiKeys: { oprKey: '', majesticKey: '', mozId: '', mozSecret: '', ahrefsKey: '', semrushKey: '' },
     apiKeyDefs: [
       { key: 'oprKey',      label: 'OpenPageRank Key',   placeholder: 'Free at openpagerank.com', secret: false },
       { key: 'majesticKey', label: 'Majestic API Key',   placeholder: 'developer.majestic.com',   secret: false },
       { key: 'mozId',       label: 'Moz Access ID',      placeholder: 'moz.com/products/api',     secret: false },
       { key: 'mozSecret',   label: 'Moz Secret Key',     placeholder: '••••••••••••',             secret: true  },
+      { key: 'ahrefsKey',   label: 'Ahrefs API Key',     placeholder: 'Bearer token — app.ahrefs.com/api', secret: true },
+      { key: 'semrushKey',  label: 'Semrush API Key',    placeholder: 'semrush.com/api',          secret: true  },
     ],
 
     // ── Pipeline state ────────────────────────────────────────────────────────
@@ -684,6 +887,176 @@ function app() {
       } else {
         this.sortCol = col;
         this.sortDir = 'desc';
+      }
+    },
+
+    // ── Domain history ────────────────────────────────────────────────────────
+    showHistory:   false,
+    historyDomain: null,
+    historyData:   null,
+    historyLoading:false,
+    _charts:       [],
+
+    async loadHistory(domain) {
+      this.historyDomain = domain;
+      this.historyData   = null;
+      this.historyLoading = true;
+      this.showHistory   = true;
+      this.destroyCharts();
+      try {
+        this.historyData = await this._call('/api/history', {
+          domain,
+          ahrefs_key:  this.apiKeys.ahrefsKey.trim(),
+          semrush_key: this.apiKeys.semrushKey.trim(),
+        });
+        await this.$nextTick();
+        this.renderCharts();
+      } catch (err) {
+        this.historyData = { error: err.message, wayback_by_year: {}, wayback_by_month: {} };
+      } finally {
+        this.historyLoading = false;
+      }
+    },
+
+    peakYear(byYear) {
+      if (!byYear || !Object.keys(byYear).length) return '—';
+      return Object.entries(byYear).sort((a, b) => b[1] - a[1])[0][0];
+    },
+
+    totalSnapshots(byYear) {
+      return Object.values(byYear || {}).reduce((a, b) => a + b, 0);
+    },
+
+    externalLinks(domain) {
+      if (!domain) return [];
+      return [
+        { label: '🕰 Wayback',  url: `https://web.archive.org/web/*/${domain}` },
+        { label: '📊 Ahrefs',   url: `https://ahrefs.com/site-explorer/overview/v2/subdomains/live?target=${domain}` },
+        { label: '📈 Semrush',  url: `https://www.semrush.com/analytics/overview/?q=${domain}&searchType=domain` },
+        { label: '🔗 Moz',      url: `https://moz.com/domain-analysis?site=${domain}` },
+        { label: '📋 Whois',    url: `https://whois.domaintools.com/${domain}` },
+        { label: '🌐 Majestic', url: `https://majestic.com/reports/site-explorer?q=${domain}` },
+        { label: '🔍 SpyFu',    url: `https://www.spyfu.com/overview/domain?query=${domain}` },
+      ];
+    },
+
+    destroyCharts() {
+      this._charts.forEach(c => { try { c.destroy(); } catch (_) {} });
+      this._charts = [];
+    },
+
+    _makeChart(id, config) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const chart = new Chart(el, config);
+      this._charts.push(chart);
+    },
+
+    renderCharts() {
+      const d = this.historyData;
+      if (!d) return;
+
+      const gridColor  = '#1e293b';
+      const tickStyle  = { color: '#64748b', font: { size: 11 } };
+      const baseOpts   = (extra = {}) => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+        scales: {
+          x: { ticks: { ...tickStyle, maxTicksLimit: 10 }, grid: { color: gridColor } },
+          y: { ticks: { ...tickStyle },                    grid: { color: gridColor }, beginAtZero: true },
+          ...extra,
+        },
+      });
+
+      // ── Wayback bar chart ───────────────────────────────────────────────────
+      if (d.wayback_by_year && Object.keys(d.wayback_by_year).length) {
+        const years  = Object.keys(d.wayback_by_year).sort();
+        const counts = years.map(y => d.wayback_by_year[y]);
+        const maxVal = Math.max(...counts, 1);
+        this._makeChart('waybackChart', {
+          type: 'bar',
+          data: {
+            labels: years,
+            datasets: [{
+              label: 'Snapshots',
+              data: counts,
+              backgroundColor: counts.map(c => {
+                const r = c / maxVal;
+                return r > 0.6 ? '#f97316' : r > 0.25 ? '#fb923c80' : '#94a3b830';
+              }),
+              borderColor: '#f9731640',
+              borderWidth: 1,
+              borderRadius: 4,
+            }],
+          },
+          options: baseOpts(),
+        });
+      }
+
+      // ── Ahrefs traffic ──────────────────────────────────────────────────────
+      if (d.ahrefs?.traffic_history?.length) {
+        this._makeChart('ahrefsTrafficChart', {
+          type: 'line',
+          data: {
+            labels: d.ahrefs.traffic_history.map(p => p.date),
+            datasets: [{
+              label: 'Organic Traffic',
+              data:  d.ahrefs.traffic_history.map(p => p.traffic),
+              borderColor: '#22c55e', backgroundColor: '#22c55e18',
+              fill: true, tension: 0.35, pointRadius: 2,
+            }],
+          },
+          options: baseOpts(),
+        });
+      }
+
+      // ── Ahrefs keywords ─────────────────────────────────────────────────────
+      if (d.ahrefs?.keywords_history?.length) {
+        this._makeChart('ahrefsKeywordsChart', {
+          type: 'line',
+          data: {
+            labels: d.ahrefs.keywords_history.map(p => p.date),
+            datasets: [{
+              label: 'Organic Keywords',
+              data:  d.ahrefs.keywords_history.map(p => p.keywords),
+              borderColor: '#3b82f6', backgroundColor: '#3b82f618',
+              fill: true, tension: 0.35, pointRadius: 2,
+            }],
+          },
+          options: baseOpts(),
+        });
+      }
+
+      // ── Semrush traffic + keywords ──────────────────────────────────────────
+      if (d.semrush?.history?.length) {
+        const h = [...d.semrush.history].reverse();
+        this._makeChart('semrushChart', {
+          type: 'line',
+          data: {
+            labels: h.map(p => p.date),
+            datasets: [
+              {
+                label: 'Traffic',
+                data:  h.map(p => p.traffic),
+                borderColor: '#22c55e', backgroundColor: '#22c55e10',
+                fill: true, tension: 0.35, pointRadius: 2,
+                yAxisID: 'y',
+              },
+              {
+                label: 'Keywords',
+                data:  h.map(p => p.keywords),
+                borderColor: '#a78bfa', backgroundColor: '#a78bfa10',
+                fill: true, tension: 0.35, pointRadius: 2,
+                yAxisID: 'y2',
+              },
+            ],
+          },
+          options: {
+            ...baseOpts({ y2: { position: 'right', ticks: tickStyle, grid: { drawOnChartArea: false } } }),
+            plugins: { legend: { display: true, labels: { color: '#94a3b8', font: { size: 11 } } } },
+          },
+        });
       }
     },
 
