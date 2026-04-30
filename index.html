@@ -171,6 +171,19 @@
                   class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
               </button>
             </div>
+            <!-- Deep SEO toggle -->
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm text-slate-300">Deep SEO</p>
+                <p class="text-xs text-slate-500">+DDG/CommonCrawl checks (slow)</p>
+              </div>
+              <button @click="opts.deepSEO = !opts.deepSEO"
+                :class="opts.deepSEO ? 'bg-brand' : 'bg-slate-700'"
+                class="relative w-10 h-5 rounded-full transition-colors">
+                <span :class="opts.deepSEO ? 'translate-x-5' : 'translate-x-0.5'"
+                  class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
+              </button>
+            </div>
             <!-- Workers -->
             <div>
               <div class="flex justify-between text-xs mb-1">
@@ -636,9 +649,11 @@ function app() {
       skipFilter:      true,   // ON by default — user's list is already automotive
       skipCheck:       false,  // skip WHOIS/RDAP availability check
       skipSEO:         false,
+      deepSEO:         false,  // adds DuckDuckGo + CommonCrawl (slow, default off)
       workers:         15,     // threads for I/O-bound HTTP — higher = faster
       maxDomainLength: 35,
       checkBatchSize:  20,     // domains per /api/check call (keeps call < 30s)
+      seoBatchSize:    15,     // domains per /api/seo call (slower per-domain)
       requestTimeout:  7,      // per-HTTP-request timeout in seconds
     },
 
@@ -907,19 +922,30 @@ function app() {
           return;
         }
 
-        // Step 5 — SEO signals
+        // Step 5 — SEO signals (batched to stay within Vercel's 60s timeout)
         this.steps[2].status = 'running';
-        this.steps[2].detail = `Fetching SEO data for ${availableDomains.length} domains…`;
-        const seoRes = await this._call('/api/seo', {
-          domains:          availableDomains,
-          workers:          this.opts.workers,
-          request_timeout:  this.opts.requestTimeout,
-          no_seo:           this.opts.skipSEO,
-          openpagerank_key: this.apiKeys.oprKey.trim(),
-          majestic_key:     this.apiKeys.majesticKey.trim(),
-          moz_id:           this.apiKeys.mozId.trim(),
-          moz_secret:       this.apiKeys.mozSecret.trim(),
-        });
+        const seoBatch  = this.opts.seoBatchSize || 15;
+        const seoTotal  = availableDomains.length;
+        const seoSignals = [];
+        for (let i = 0; i < seoTotal; i += seoBatch) {
+          const batch = availableDomains.slice(i, i + seoBatch);
+          const end   = Math.min(i + seoBatch, seoTotal);
+          this.steps[2].detail = `Fetching SEO data ${i + 1}–${end} of ${seoTotal}…`;
+          const bRes = await this._call('/api/seo', {
+            domains:          batch,
+            workers:          this.opts.workers,
+            request_timeout:  this.opts.requestTimeout,
+            no_seo:           this.opts.skipSEO,
+            deep_seo:         this.opts.deepSEO,
+            openpagerank_key: this.apiKeys.oprKey.trim(),
+            majestic_key:     this.apiKeys.majesticKey.trim(),
+            moz_id:           this.apiKeys.mozId.trim(),
+            moz_secret:       this.apiKeys.mozSecret.trim(),
+          });
+          seoSignals.push(...(bRes.signals || []));
+        }
+        const seoRes = { signals: seoSignals, total: seoSignals.length };
+        this.steps[2].detail = `SEO data fetched for ${seoRes.total} domains`;
         // Merge availability data into signals
         const availMap = {};
         available.forEach(a => availMap[a.domain] = a);
@@ -958,15 +984,26 @@ function app() {
     },
 
     async _call(url, body) {
-      const res = await fetch(url, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
-      });
+      let res;
+      try {
+        res = await fetch(url, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify(body),
+        });
+      } catch (e) {
+        throw new Error(`Network error reaching ${url}: ${e.message}`);
+      }
       if (!res.ok) {
-        let msg = `API error ${res.status}`;
-        try { msg = (await res.json()).detail || msg; } catch (_) {}
-        throw new Error(msg);
+        const friendly = {
+          504: 'Server timeout (>60s) — try smaller batch size or skip SEO',
+          502: 'Bad gateway — Vercel is restarting; retry in a few seconds',
+          429: 'Rate limited by upstream API — slow down or check API key quota',
+          413: 'Payload too large — reduce batch size',
+        }[res.status];
+        let detail = '';
+        try { detail = (await res.json()).detail || ''; } catch (_) {}
+        throw new Error(detail || friendly || `API error ${res.status} ${res.statusText}`);
       }
       return res.json();
     },
