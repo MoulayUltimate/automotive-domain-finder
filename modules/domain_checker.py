@@ -31,7 +31,7 @@ logger = get_logger("domain_checker")
 def _resolves_dns(domain: str) -> bool:
     """True if domain has at least one DNS A/AAAA record."""
     try:
-        socket.setdefaulttimeout(5)
+        socket.setdefaulttimeout(2)   # 2 s is plenty — expired domains fail instantly
         socket.getaddrinfo(domain, None)
         return True
     except (socket.gaierror, OSError):
