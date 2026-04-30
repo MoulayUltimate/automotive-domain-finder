@@ -66,7 +66,7 @@
           <textarea
             x-model="domainsText"
             rows="7"
-            placeholder="Paste domains here, one per line&#10;&#10;example.com&#10;motortrend.net&#10;autoguide.org"
+            placeholder="Paste domains, URLs, or Semrush/Ahrefs CSV rows&#10;&#10;example.com&#10;https://motortrend.net&#10;2,autoguide.org,2,2025-06-17&#10;&#10;# Lines starting with # are ignored"
             class="w-full rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-200 placeholder-slate-600
                    px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-brand"
           ></textarea>
@@ -81,7 +81,8 @@
             </button>
           </div>
           <p class="text-xs text-slate-500 mt-1">
-            <span class="text-slate-300 font-medium" x-text="parsedDomains.length"></span> domains loaded
+            <span class="text-slate-300 font-medium" x-text="parsedDomains.length"></span> domains detected
+            <span class="text-slate-600">— extra CSV columns / URLs / dates are auto-filtered</span>
           </p>
         </section>
 
@@ -790,11 +791,36 @@ function app() {
     ],
 
     // ── Computed ──────────────────────────────────────────────────────────────
+    // Robust parser: extracts the domain from CSV exports (Semrush, Ahrefs,
+    // SimilarWeb, etc.), markdown links, raw URLs, or plain lists.
+    // Ignores numeric columns, dates, scores, and other dotted-but-not-domain noise.
     get parsedDomains() {
-      return this.domainsText
-        .split(/[\n,]+/)
-        .map(d => d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, ''))
-        .filter(d => d && d.includes('.') && !d.startsWith('#'));
+      // 1. Drop full-line comments
+      const cleaned = this.domainsText
+        .split('\n')
+        .filter(line => !line.trim().startsWith('#'))
+        .join('\n')
+        .toLowerCase()
+        // unwrap markdown links → keep inner text:  [foo.com](http://foo.com) → foo.com
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        // Excel HYPERLINK formula:  =HYPERLINK("url","text") → text
+        .replace(/=hyperlink\("[^"]+",\s*"([^"]+)"\)/gi, '$1')
+        // strip protocol+path so just the host remains:  https://x.com/y → x.com
+        .replace(/https?:\/\/([^\s/,;|"')\]]+)[^\s,;|"')\]]*/g, '$1');
+
+      // 2. Match domain-like tokens.
+      //    Requires alphabetic TLD ≥ 2 chars → rejects "1.5", "2.0", "127.0.0.1",
+      //    "2025-06-17", and other numeric noise.
+      const re = /\b([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,24})\b/g;
+
+      const seen = new Set();
+      const out  = [];
+      let m;
+      while ((m = re.exec(cleaned)) !== null) {
+        const d = m[1].replace(/\.+$/, '');
+        if (!seen.has(d)) { seen.add(d); out.push(d); }
+      }
+      return out;
     },
 
     get visibleCols() {
