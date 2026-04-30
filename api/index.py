@@ -55,10 +55,11 @@ def _apply_api_keys(req_dict: dict) -> None:
 # ── /api/filter ───────────────────────────────────────────────────────────────
 
 class FilterRequest(BaseModel):
-    domains:  list[str]
-    fast:     bool           = True
-    workers:  int            = Field(default=5, ge=1, le=20)
-    keywords: list[str] | None = None
+    domains:     list[str]
+    fast:        bool            = True
+    skip_filter: bool            = False   # bypass automotive relevance check entirely
+    workers:     int             = Field(default=5, ge=1, le=20)
+    keywords:    list[str] | None = None
 
 
 @app.post("/api/filter")
@@ -66,19 +67,30 @@ async def filter_step(req: FilterRequest):
     import config
     from modules.domain_filter import filter_automotive  # noqa: PLC0415
 
-    config.MAX_WORKERS = req.workers
-    if req.keywords:
-        config.AUTOMOTIVE_KEYWORDS = req.keywords
-
     domains = [d.strip().lower() for d in req.domains if d.strip()]
     if not domains:
         raise HTTPException(status_code=422, detail="No domains provided.")
+
+    # When skip_filter=True the caller guarantees domains are already automotive —
+    # pass them all through with a neutral relevance score of 1.
+    if req.skip_filter:
+        return {
+            "filtered":    [[d, 1] for d in domains],
+            "total_input": len(domains),
+            "total_kept":  len(domains),
+            "skipped":     True,
+        }
+
+    config.MAX_WORKERS = req.workers
+    if req.keywords:
+        config.AUTOMOTIVE_KEYWORDS = req.keywords
 
     filtered = filter_automotive(domains, slow_check=not req.fast, workers=req.workers)
     return {
         "filtered":    [[d, s] for d, s in filtered],
         "total_input": len(domains),
         "total_kept":  len(filtered),
+        "skipped":     False,
     }
 
 
