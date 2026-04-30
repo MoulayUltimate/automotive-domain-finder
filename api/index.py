@@ -223,6 +223,133 @@ async def score_step(req: ScoreRequest):
     return {"scored": scored, "total": len(scored)}
 
 
+# ── /api/history ──────────────────────────────────────────────────────────────
+
+class HistoryRequest(BaseModel):
+    domain:      str
+    ahrefs_key:  str = ""
+    semrush_key: str = ""
+
+
+@app.post("/api/history")
+async def domain_history(req: HistoryRequest):
+    import requests as _requests
+    import config
+    from modules.utils import make_session, safe_get  # noqa: PLC0415
+
+    domain = req.domain.strip().lower()
+
+    # ── 1. Wayback Machine — monthly breakdown ─────────────────────────────────
+    params = {
+        "url":       domain,
+        "matchType": "domain",
+        "output":    "json",
+        "fl":        "timestamp",
+        "limit":     "5000",
+        "collapse":  "timestamp:6",   # one record per calendar month
+        "filter":    "statuscode:200",
+    }
+    session = make_session()
+    resp    = safe_get(config.WAYBACK_CDX_URL, session, params=params)
+
+    wayback_by_year:  dict[str, int] = {}
+    wayback_by_month: dict[str, int] = {}
+    first_seen = last_seen = None
+
+    if resp:
+        try:
+            rows = resp.json()
+            timestamps = [r[0] for r in rows[1:] if r]
+            if timestamps:
+                first_seen = timestamps[0][:8]
+                last_seen  = timestamps[-1][:8]
+                for ts in timestamps:
+                    yr  = ts[:4]
+                    mo  = f"{ts[:4]}-{ts[4:6]}"
+                    wayback_by_year[yr] = wayback_by_year.get(yr, 0) + 1
+                    wayback_by_month[mo] = wayback_by_month.get(mo, 0) + 1
+        except Exception:
+            pass
+
+    result: dict = {
+        "domain":            domain,
+        "wayback_by_year":   dict(sorted(wayback_by_year.items())),
+        "wayback_by_month":  dict(sorted(wayback_by_month.items())),
+        "first_seen":        first_seen,
+        "last_seen":         last_seen,
+        "ahrefs":            None,
+        "semrush":           None,
+        "ahrefs_error":      None,
+        "semrush_error":     None,
+    }
+
+    # ── 2. Ahrefs organic history (v3 API) ────────────────────────────────────
+    if req.ahrefs_key.strip():
+        from datetime import datetime, timedelta  # noqa: PLC0415
+        today        = datetime.now().strftime("%Y-%m-%d")
+        two_years_ago = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
+        try:
+            ar = _requests.get(
+                "https://api.ahrefs.com/v3/site-explorer/metrics-history",
+                params={
+                    "target":      domain,
+                    "date_from":   two_years_ago,
+                    "date_to":     today,
+                    "volume_mode": "monthly",
+                    "mode":        "domain",
+                },
+                headers={"Authorization": f"Bearer {req.ahrefs_key.strip()}"},
+                timeout=15,
+            )
+            if ar.ok:
+                metrics = ar.json().get("metrics", [])
+                result["ahrefs"] = {
+                    "traffic_history":  [{"date": m["date"], "traffic":  m.get("org_traffic",  0)} for m in metrics],
+                    "keywords_history": [{"date": m["date"], "keywords": m.get("org_keywords", 0)} for m in metrics],
+                }
+            else:
+                result["ahrefs_error"] = f"{ar.status_code}: {ar.text[:200]}"
+        except Exception as e:
+            result["ahrefs_error"] = str(e)
+
+    # ── 3. Semrush organic history ────────────────────────────────────────────
+    if req.semrush_key.strip() and not result["ahrefs"]:
+        try:
+            sr = _requests.get(
+                "https://api.semrush.com/",
+                params={
+                    "type":            "domain_rank_history",
+                    "key":             req.semrush_key.strip(),
+                    "export_columns":  "Dt,Or,Ot",
+                    "domain":          domain,
+                    "database":        "us",
+                    "display_limit":   "24",
+                },
+                timeout=15,
+            )
+            if sr.ok:
+                lines = sr.text.strip().split("\r\n")
+                history = []
+                for line in lines[1:]:
+                    parts = line.split(";")
+                    if len(parts) >= 3:
+                        try:
+                            history.append({
+                                "date":     parts[0],
+                                "keywords": int(parts[1]),
+                                "traffic":  int(parts[2]),
+                            })
+                        except ValueError:
+                            pass
+                result["semrush"] = {"history": history}
+            else:
+                result["semrush_error"] = f"{sr.status_code}: {sr.text[:200]}"
+        except Exception as e:
+            result["semrush_error"] = str(e)
+
+    return result
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
