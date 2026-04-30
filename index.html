@@ -130,6 +130,19 @@
                   class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
               </button>
             </div>
+            <!-- Skip automotive filter toggle -->
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm text-slate-300">Skip Automotive Filter</p>
+                <p class="text-xs text-slate-500">Use all domains as-is (recommended if list is pre-curated)</p>
+              </div>
+              <button @click="opts.skipFilter = !opts.skipFilter"
+                :class="opts.skipFilter ? 'bg-brand' : 'bg-slate-700'"
+                class="relative w-10 h-5 rounded-full transition-colors">
+                <span :class="opts.skipFilter ? 'translate-x-5' : 'translate-x-0.5'"
+                  class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
+              </button>
+            </div>
             <!-- Skip SEO toggle -->
             <div class="flex items-center justify-between">
               <div>
@@ -390,6 +403,7 @@ function app() {
     // ── Options ───────────────────────────────────────────────────────────────
     opts: {
       fastMode:        true,
+      skipFilter:      true,   // ON by default — user's list is already automotive
       skipSEO:         false,
       workers:         5,
       maxDomainLength: 35,
@@ -547,18 +561,23 @@ function app() {
       this.steps.forEach(s => { s.status = 'idle'; s.detail = ''; });
 
       try {
-        // Step 3 — Automotive filter
+        // Step 3 — Automotive filter (skippable)
         this.steps[0].status = 'running';
-        this.steps[0].detail = `Analysing ${this.parsedDomains.length} domains…`;
+        this.steps[0].detail = this.opts.skipFilter
+          ? `Passing all ${this.parsedDomains.length} domains through…`
+          : `Analysing ${this.parsedDomains.length} domains…`;
         const filterRes = await this._call('/api/filter', {
-          domains: this.parsedDomains,
-          fast:    this.opts.fastMode,
-          workers: this.opts.workers,
+          domains:     this.parsedDomains,
+          fast:        this.opts.fastMode,
+          skip_filter: this.opts.skipFilter,
+          workers:     this.opts.workers,
         });
         const relevance = Object.fromEntries(filterRes.filtered);
         const filteredDomains = filterRes.filtered.map(([d]) => d);
         this.steps[0].status = 'done';
-        this.steps[0].detail = `${filteredDomains.length} automotive domains identified`;
+        this.steps[0].detail = filterRes.skipped
+          ? `Filter skipped — all ${filteredDomains.length} domains carried forward`
+          : `${filteredDomains.length} automotive domains identified`;
 
         if (!filteredDomains.length) {
           this.steps[1].detail = 'Nothing to check';
@@ -592,10 +611,10 @@ function app() {
           domains:          availableDomains,
           workers:          this.opts.workers,
           no_seo:           this.opts.skipSEO,
-          openpagerank_key: this.apiKeys.oprKey,
-          majestic_key:     this.apiKeys.majesticKey,
-          moz_id:           this.apiKeys.mozId,
-          moz_secret:       this.apiKeys.mozSecret,
+          openpagerank_key: this.apiKeys.oprKey.trim(),
+          majestic_key:     this.apiKeys.majesticKey.trim(),
+          moz_id:           this.apiKeys.mozId.trim(),
+          moz_secret:       this.apiKeys.mozSecret.trim(),
         });
         // Merge availability data into signals
         const availMap = {};
