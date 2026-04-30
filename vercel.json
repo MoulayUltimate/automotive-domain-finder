@@ -7,12 +7,15 @@
       "config": { "maxLambdaSize": "15mb" }
     },
     {
-      "src": "index.html",
+      "src": "*.html",
       "use": "@vercel/static"
     }
   ],
   "routes": [
-    { "src": "/api/(.*)", "dest": "/api/index.py" },
-    { "src": "/(.*)",     "dest": "/index.html"   }
+    { "src": "/api/(.*)",  "dest": "/api/index.py" },
+    { "src": "/login",     "dest": "/login.html"   },
+    { "src": "/admin",     "dest": "/admin.html"   },
+    { "src": "/(.+\\.html)","dest": "/$1"          },
+    { "src": "/(.*)",      "dest": "/index.html"   }
   ]
 }

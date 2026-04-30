@@ -18,10 +18,19 @@ from pathlib import Path
 _root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_root))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 from pydantic import BaseModel, Field
+from typing import Optional
+
+# Make sibling modules in the api/ folder importable as top-level modules
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from auth import (  # noqa: E402
+    hash_password, verify_password, create_token, verify_token,
+    valid_email, valid_password, public_user,
+)
+from auth_store import get_user_store  # noqa: E402
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 app = FastAPI(title="Automotive Domain Finder API", version="1.0.0")
@@ -32,6 +41,124 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Auth dependencies ─────────────────────────────────────────────────────────
+
+async def get_current_user(authorization: Optional[str] = Header(default=None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
+    token = authorization.split(" ", 1)[1]
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+    user = get_user_store().get_user(payload["email"])
+    if not user:
+        raise HTTPException(status_code=401, detail="User no longer exists.")
+    return public_user(user)
+
+
+async def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return user
+
+
+# ── /api/auth/* ───────────────────────────────────────────────────────────────
+
+class RegisterReq(BaseModel):
+    email:     str
+    password:  str
+    full_name: str = ""
+
+
+class LoginReq(BaseModel):
+    email:    str
+    password: str
+
+
+@app.post("/api/auth/register")
+async def auth_register(req: RegisterReq):
+    if not valid_email(req.email):
+        raise HTTPException(status_code=422, detail="Invalid email address.")
+    ok, msg = valid_password(req.password)
+    if not ok:
+        raise HTTPException(status_code=422, detail=msg)
+
+    store = get_user_store()
+    if store.get_user(req.email):
+        raise HTTPException(status_code=409, detail="Email already registered.")
+
+    # First user becomes admin
+    role = "admin" if not store.list_users() else "member"
+    try:
+        user = store.create_user(
+            email=req.email,
+            password_hash=hash_password(req.password),
+            full_name=req.full_name or req.email.split("@")[0],
+            role=role,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+    public = public_user(user)
+    return {"token": create_token(public), "user": public}
+
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginReq):
+    if not valid_email(req.email):
+        raise HTTPException(status_code=422, detail="Invalid email address.")
+    store = get_user_store()
+    user = store.get_user(req.email)
+    if not user or not verify_password(req.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    from datetime import datetime, timezone
+    store.update_user(req.email, last_login=datetime.now(timezone.utc).isoformat())
+    public = public_user(user)
+    public["last_login"] = datetime.now(timezone.utc).isoformat()
+    return {"token": create_token(public), "user": public}
+
+
+@app.get("/api/auth/me")
+async def auth_me(user: dict = Depends(get_current_user)):
+    return {"user": user}
+
+
+# ── /api/admin/users ──────────────────────────────────────────────────────────
+
+class RoleUpdate(BaseModel):
+    role: str
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(_admin: dict = Depends(get_admin_user)):
+    users = [public_user(u) for u in get_user_store().list_users()]
+    return {"users": users, "total": len(users)}
+
+
+@app.post("/api/admin/users/{email}/role")
+async def admin_update_role(email: str, body: RoleUpdate, admin: dict = Depends(get_admin_user)):
+    if body.role not in ("admin", "member"):
+        raise HTTPException(status_code=422, detail="Role must be 'admin' or 'member'.")
+    if email.lower() == admin["email"].lower() and body.role != "admin":
+        raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
+    store = get_user_store()
+    if not store.get_user(email):
+        raise HTTPException(status_code=404, detail="User not found.")
+    user = store.update_user(email, role=body.role)
+    return {"user": public_user(user)}
+
+
+@app.delete("/api/admin/users/{email}")
+async def admin_delete_user(email: str, admin: dict = Depends(get_admin_user)):
+    if email.lower() == admin["email"].lower():
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    store = get_user_store()
+    if not store.delete_user(email):
+        raise HTTPException(status_code=404, detail="User not found.")
+    return {"deleted": True, "email": email}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -63,7 +190,7 @@ class FilterRequest(BaseModel):
 
 
 @app.post("/api/filter")
-async def filter_step(req: FilterRequest):
+async def filter_step(req: FilterRequest, _user: dict = Depends(get_current_user)):
     import config
     from modules.domain_filter import filter_automotive  # noqa: PLC0415
 
@@ -103,7 +230,7 @@ class CheckRequest(BaseModel):
 
 
 @app.post("/api/check")
-async def check_step(req: CheckRequest):
+async def check_step(req: CheckRequest, _user: dict = Depends(get_current_user)):
     import config
     from modules.domain_checker import check_domains_bulk  # noqa: PLC0415
 
@@ -136,7 +263,7 @@ class SEORequest(BaseModel):
 
 
 @app.post("/api/seo")
-async def seo_step(req: SEORequest):
+async def seo_step(req: SEORequest, _user: dict = Depends(get_current_user)):
     import config
     from modules.seo_estimator import (  # noqa: PLC0415
         _wayback_data,
@@ -196,7 +323,7 @@ class ScoreRequest(BaseModel):
 
 
 @app.post("/api/score")
-async def score_step(req: ScoreRequest):
+async def score_step(req: ScoreRequest, _user: dict = Depends(get_current_user)):
     import config
     import modules.scorer as scorer_module  # noqa: PLC0415
     from modules.scorer import score_all    # noqa: PLC0415
@@ -258,7 +385,7 @@ class HistoryRequest(BaseModel):
 
 
 @app.post("/api/history")
-async def domain_history(req: HistoryRequest):
+async def domain_history(req: HistoryRequest, _user: dict = Depends(get_current_user)):
     import requests as _requests
     import config
     from modules.utils import make_session, safe_get  # noqa: PLC0415

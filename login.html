@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In · Automotive Domain Finder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { DEFAULT: '#f97316', dark: '#ea580c', light: '#fb923c' },
+          },
+          fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
+        },
+      },
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>[x-cloak] { display: none !important; }</style>
+</head>
+
+<body class="h-full bg-slate-950 text-slate-200 font-sans antialiased">
+
+<div x-data="loginPage()" x-init="init()" x-cloak
+     class="min-h-full flex items-center justify-center px-4 py-10">
+
+  <div class="w-full max-w-md">
+    <!-- Logo / heading -->
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-orange-500/10 border border-orange-500/20 mb-4">
+        <svg class="w-8 h-8 text-brand" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M8.25 18.75a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 0 1-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 0 0-3.213-9.193 2.056 2.056 0 0 0-1.58-.86H14.25M16.5 18.75h-2.25m0-11.177v-.958c0-.568-.422-1.048-.987-1.106a48.554 48.554 0 0 0-10.026 0 1.106 1.106 0 0 0-.987 1.106v7.635m12-6.677v6.677m0 4.5v-4.5m0 0h-12" />
+        </svg>
+      </div>
+      <h1 class="text-2xl font-bold tracking-tight text-white">Automotive Domain Finder</h1>
+      <p class="text-sm text-slate-400 mt-1">Expired domain hunter for the car niche</p>
+    </div>
+
+    <!-- Card -->
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
+      <!-- Tabs -->
+      <div class="flex bg-slate-800/60 rounded-lg p-1 mb-6">
+        <button @click="mode='signin'; error=''; info=''"
+                :class="mode==='signin' ? 'bg-slate-900 text-white shadow' : 'text-slate-400 hover:text-slate-200'"
+                class="flex-1 py-2 rounded-md text-sm font-medium transition-colors">
+          Sign In
+        </button>
+        <button @click="mode='register'; error=''; info=''"
+                :class="mode==='register' ? 'bg-slate-900 text-white shadow' : 'text-slate-400 hover:text-slate-200'"
+                class="flex-1 py-2 rounded-md text-sm font-medium transition-colors">
+          Create Account
+        </button>
+      </div>
+
+      <!-- Form -->
+      <form @submit.prevent="submit()" class="space-y-4">
+        <div x-show="mode==='register'">
+          <label class="text-xs font-medium text-slate-400 block mb-1.5">Full Name</label>
+          <input type="text" x-model="form.full_name" autocomplete="name"
+                 placeholder="Jane Doe"
+                 class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-100
+                        focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent transition" />
+        </div>
+
+        <div>
+          <label class="text-xs font-medium text-slate-400 block mb-1.5">Email</label>
+          <input type="email" x-model="form.email" autocomplete="email" required
+                 placeholder="you@example.com"
+                 class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-100
+                        focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent transition" />
+        </div>
+
+        <div>
+          <label class="text-xs font-medium text-slate-400 block mb-1.5">Password</label>
+          <input type="password" x-model="form.password"
+                 :autocomplete="mode==='signin' ? 'current-password' : 'new-password'"
+                 required minlength="6" placeholder="••••••••"
+                 class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-100
+                        focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent transition" />
+          <p x-show="mode==='register'" class="text-xs text-slate-500 mt-1">Minimum 6 characters</p>
+        </div>
+
+        <!-- Error message -->
+        <div x-show="error" x-transition
+             class="rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-300"
+             x-text="error"></div>
+
+        <!-- Info message -->
+        <div x-show="info" x-transition
+             class="rounded-lg bg-emerald-500/10 border border-emerald-500/30 px-3 py-2 text-xs text-emerald-300"
+             x-text="info"></div>
+
+        <!-- Submit -->
+        <button type="submit" :disabled="loading"
+                class="w-full bg-brand hover:bg-brand-dark disabled:opacity-60 disabled:cursor-not-allowed
+                       text-white font-medium py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2">
+          <svg x-show="loading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity="0.25"></circle>
+            <path d="M12 2a10 10 0 0110 10" stroke="currentColor" stroke-width="3" fill="none"></path>
+          </svg>
+          <span x-text="loading ? 'Please wait…' : (mode==='signin' ? 'Sign In' : 'Create Account')"></span>
+        </button>
+      </form>
+
+      <p class="text-xs text-slate-500 text-center mt-5" x-show="mode==='register'">
+        First registered user automatically becomes admin.
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+function loginPage() {
+  return {
+    mode:    'signin',
+    loading: false,
+    error:   '',
+    info:    '',
+    form:    { email: '', password: '', full_name: '' },
+
+    init() {
+      const stored = localStorage.getItem('adf_auth');
+      if (!stored) return;
+      try {
+        const { token } = JSON.parse(stored);
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        if (payload.exp * 1000 > Date.now()) {
+          window.location.href = '/';
+        } else {
+          localStorage.removeItem('adf_auth');
+        }
+      } catch (_) {
+        localStorage.removeItem('adf_auth');
+      }
+    },
+
+    async submit() {
+      this.error = ''; this.info = '';
+      const path = this.mode === 'signin' ? '/api/auth/login' : '/api/auth/register';
+      const body = this.mode === 'signin'
+        ? { email: this.form.email, password: this.form.password }
+        : { email: this.form.email, password: this.form.password, full_name: this.form.full_name };
+
+      this.loading = true;
+      try {
+        const res = await fetch(path, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.error = data.detail || `Error ${res.status}`;
+          return;
+        }
+        localStorage.setItem('adf_auth', JSON.stringify({ token: data.token, user: data.user }));
+        window.location.href = '/';
+      } catch (e) {
+        this.error = `Network error: ${e.message}`;
+      } finally {
+        this.loading = false;
+      }
+    },
+  };
+}
+</script>
+
+</body>
+</html>

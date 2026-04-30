@@ -19,6 +19,10 @@ aiohttp>=3.9.0
 # Data handling
 pandas>=2.2.0        # optional, only used if you enable pandas export
 
+# Auth (JWT + bcrypt)
+bcrypt>=4.1.0
+pyjwt>=2.8.0
+
 # Utilities
 fake-useragent>=1.5.1  # extra UA rotation (optional, falls back to config list)
 tqdm>=4.66.0           # progress bars
