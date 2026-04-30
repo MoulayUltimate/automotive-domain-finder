@@ -176,8 +176,23 @@
                 <span class="text-slate-300">Parallel Workers</span>
                 <span class="text-brand font-mono font-medium" x-text="opts.workers"></span>
               </div>
-              <input type="range" class="w-full h-1.5 rounded" min="1" max="20" step="1"
+              <input type="range" class="w-full h-1.5 rounded" min="1" max="30" step="1"
                 x-model.number="opts.workers" />
+              <div class="flex justify-between text-xs text-slate-600 mt-0.5">
+                <span>1</span><span class="text-green-600 font-medium">15 recommended</span><span>30</span>
+              </div>
+            </div>
+            <!-- Request timeout -->
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-300">Request Timeout</span>
+                <span class="text-brand font-mono font-medium" x-text="`${opts.requestTimeout}s`"></span>
+              </div>
+              <input type="range" class="w-full h-1.5 rounded" min="2" max="20" step="1"
+                x-model.number="opts.requestTimeout" />
+              <div class="flex justify-between text-xs text-slate-600 mt-0.5">
+                <span>2s (fast)</span><span>20s (thorough)</span>
+              </div>
             </div>
             <!-- Max domain length -->
             <div>
@@ -620,9 +635,10 @@ function app() {
       skipFilter:      true,   // ON by default — user's list is already automotive
       skipCheck:       false,  // skip WHOIS/RDAP availability check
       skipSEO:         false,
-      workers:         5,
+      workers:         15,     // threads for I/O-bound HTTP — higher = faster
       maxDomainLength: 35,
-      checkBatchSize:  10,     // domains per /api/check call (avoids 504 timeout)
+      checkBatchSize:  20,     // domains per /api/check call (keeps call < 30s)
+      requestTimeout:  7,      // per-HTTP-request timeout in seconds
     },
 
     // ── API Keys ─────────────────────────────────────────────────────────────
@@ -832,8 +848,9 @@ function app() {
             const end   = Math.min(i + bs, total);
             this.steps[1].detail = `Checking ${i + 1}–${end} of ${total} domains…`;
             const bRes = await this._call('/api/check', {
-              domains: batch,
-              workers: Math.min(this.opts.workers, 5),
+              domains:         batch,
+              workers:         this.opts.workers,
+              request_timeout: this.opts.requestTimeout,
             });
             available.push(...(bRes.available || []));
           }
@@ -854,6 +871,7 @@ function app() {
         const seoRes = await this._call('/api/seo', {
           domains:          availableDomains,
           workers:          this.opts.workers,
+          request_timeout:  this.opts.requestTimeout,
           no_seo:           this.opts.skipSEO,
           openpagerank_key: this.apiKeys.oprKey.trim(),
           majestic_key:     this.apiKeys.majesticKey.trim(),
