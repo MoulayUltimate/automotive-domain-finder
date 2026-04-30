@@ -18,11 +18,10 @@ from pathlib import Path
 _root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_root))
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 from pydantic import BaseModel, Field
-from typing import Optional
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 app = FastAPI(title="Automotive Domain Finder API", version="1.0.0")
@@ -33,150 +32,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# ── Supabase auth helpers ─────────────────────────────────────────────────────
-
-def _get_supabase_admin_client():
-    """Return a Supabase client using the SERVICE ROLE key (server-side only)."""
-    from supabase import create_client  # noqa: PLC0415
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-    if not url or not key:
-        raise HTTPException(status_code=500, detail="Supabase server configuration missing.")
-    return create_client(url, key)
-
-
-async def get_current_user(authorization: Optional[str] = Header(default=None)):
-    """FastAPI dependency: verify Bearer JWT and return the Supabase user object."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
-    token = authorization.split(" ", 1)[1]
-    try:
-        client = _get_supabase_admin_client()
-        response = client.auth.get_user(token)
-        if not response or not response.user:
-            raise HTTPException(status_code=401, detail="Invalid or expired token.")
-        return response.user
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {exc}") from exc
-
-
-async def get_admin_user(user=Depends(get_current_user)):
-    """Dependency that additionally requires the user to have role == 'admin'."""
-    role = (user.user_metadata or {}).get("role", "member")
-    if role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required.")
-    return user
-
-
-# ── /api/config ───────────────────────────────────────────────────────────────
-
-@app.get("/api/config")
-async def get_config():
-    """Return public Supabase config (anon key is safe to expose in the browser)."""
-    supabase_url = os.environ.get("SUPABASE_URL", "")
-    supabase_anon_key = os.environ.get("SUPABASE_ANON_KEY", "")
-    if not supabase_url or not supabase_anon_key:
-        raise HTTPException(status_code=500, detail="Supabase public configuration not set.")
-    return {"supabase_url": supabase_url, "supabase_anon_key": supabase_anon_key}
-
-
-# ── /api/auth/post-register ───────────────────────────────────────────────────
-
-@app.post("/api/auth/post-register")
-async def post_register(user=Depends(get_current_user)):
-    """
-    Called by the frontend after a successful sign-up.
-    Checks total user count: if this is the first user, grants admin role;
-    otherwise sets member role.
-    """
-    try:
-        client = _get_supabase_admin_client()
-        # list_users returns a ListUsersResponse; users is a list
-        list_resp = client.auth.admin.list_users()
-        users = list_resp if isinstance(list_resp, list) else getattr(list_resp, "users", [])
-        role = "admin" if len(users) == 1 else "member"
-        client.auth.admin.update_user_by_id(
-            user.id,
-            {"user_metadata": {"role": role, "full_name": (user.user_metadata or {}).get("full_name", "")}}
-        )
-        return {"role": role}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Post-register error: {exc}") from exc
-
-
-# ── /api/admin/users ──────────────────────────────────────────────────────────
-
-@app.get("/api/admin/users")
-async def admin_list_users(admin=Depends(get_admin_user)):
-    """List all registered users (admin only)."""
-    try:
-        client = _get_supabase_admin_client()
-        list_resp = client.auth.admin.list_users()
-        users = list_resp if isinstance(list_resp, list) else getattr(list_resp, "users", [])
-        result = []
-        for u in users:
-            meta = u.user_metadata or {}
-            result.append({
-                "id":             u.id,
-                "email":          u.email or "",
-                "full_name":      meta.get("full_name", ""),
-                "role":           meta.get("role", "member"),
-                "created_at":     u.created_at.isoformat() if u.created_at else None,
-                "last_sign_in_at": u.last_sign_in_at.isoformat() if u.last_sign_in_at else None,
-            })
-        return {"users": result, "total": len(result)}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to list users: {exc}") from exc
-
-
-# ── /api/admin/users/{user_id}/role ──────────────────────────────────────────
-
-class RoleUpdate(BaseModel):
-    role: str  # "admin" or "member"
-
-
-@app.post("/api/admin/users/{user_id}/role")
-async def admin_update_role(user_id: str, body: RoleUpdate, admin=Depends(get_admin_user)):
-    """Update a user's role (admin only)."""
-    if body.role not in ("admin", "member"):
-        raise HTTPException(status_code=422, detail="Role must be 'admin' or 'member'.")
-    try:
-        client = _get_supabase_admin_client()
-        # Fetch existing metadata to preserve other fields (e.g. full_name)
-        target = client.auth.admin.get_user_by_id(user_id)
-        existing_meta = (target.user.user_metadata or {}) if target and target.user else {}
-        existing_meta["role"] = body.role
-        client.auth.admin.update_user_by_id(user_id, {"user_metadata": existing_meta})
-        return {"user_id": user_id, "role": body.role}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to update role: {exc}") from exc
-
-
-# ── DELETE /api/admin/users/{user_id} ────────────────────────────────────────
-
-@app.delete("/api/admin/users/{user_id}")
-async def admin_delete_user(user_id: str, admin=Depends(get_admin_user)):
-    """Delete a user account (admin only)."""
-    if user_id == admin.id:
-        raise HTTPException(status_code=400, detail="Cannot delete your own account.")
-    try:
-        client = _get_supabase_admin_client()
-        client.auth.admin.delete_user(user_id)
-        return {"deleted": True, "user_id": user_id}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to delete user: {exc}") from exc
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -208,7 +63,7 @@ class FilterRequest(BaseModel):
 
 
 @app.post("/api/filter")
-async def filter_step(req: FilterRequest, _user=Depends(get_current_user)):
+async def filter_step(req: FilterRequest):
     import config
     from modules.domain_filter import filter_automotive  # noqa: PLC0415
 
@@ -248,7 +103,7 @@ class CheckRequest(BaseModel):
 
 
 @app.post("/api/check")
-async def check_step(req: CheckRequest, _user=Depends(get_current_user)):
+async def check_step(req: CheckRequest):
     import config
     from modules.domain_checker import check_domains_bulk  # noqa: PLC0415
 
@@ -281,7 +136,7 @@ class SEORequest(BaseModel):
 
 
 @app.post("/api/seo")
-async def seo_step(req: SEORequest, _user=Depends(get_current_user)):
+async def seo_step(req: SEORequest):
     import config
     from modules.seo_estimator import (  # noqa: PLC0415
         _wayback_data,
@@ -341,7 +196,7 @@ class ScoreRequest(BaseModel):
 
 
 @app.post("/api/score")
-async def score_step(req: ScoreRequest, _user=Depends(get_current_user)):
+async def score_step(req: ScoreRequest):
     import config
     import modules.scorer as scorer_module  # noqa: PLC0415
     from modules.scorer import score_all    # noqa: PLC0415
@@ -403,7 +258,7 @@ class HistoryRequest(BaseModel):
 
 
 @app.post("/api/history")
-async def domain_history(req: HistoryRequest, _user=Depends(get_current_user)):
+async def domain_history(req: HistoryRequest):
     import requests as _requests
     import config
     from modules.utils import make_session, safe_get  # noqa: PLC0415
