@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Panel — Automotive Domain Finder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { DEFAULT: '#f97316', dark: '#ea580c', light: '#fb923c' },
+          },
+          fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    [x-cloak] { display: none !important; }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  </style>
+</head>
+
+<body class="h-full bg-slate-950 text-slate-200 font-sans antialiased">
+<div x-data="adminApp()" x-init="init()" x-cloak class="min-h-full">
+
+  <!-- Loading / Auth check overlay -->
+  <div x-show="initializing" class="fixed inset-0 flex items-center justify-center bg-slate-950 z-50">
+    <div class="text-center space-y-3">
+      <svg class="w-8 h-8 animate-spin text-orange-500 mx-auto" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+      </svg>
+      <p class="text-slate-400 text-sm">Loading admin panel…</p>
+    </div>
+  </div>
+
+  <template x-if="!initializing">
+    <div class="fade-in">
+
+      <!-- ── NAVBAR ──────────────────────────────────────────────────────── -->
+      <header class="sticky top-0 z-40 border-b border-slate-800 bg-slate-900/90 backdrop-blur px-6 py-3 flex items-center gap-4">
+        <!-- Logo -->
+        <div class="flex items-center gap-2.5">
+          <svg class="w-6 h-6 text-orange-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M8.25 18.75a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 0 1-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 0 0-3.213-9.193 2.056 2.056 0 0 0-1.58-.86H14.25M16.5 18.75h-2.25m0-11.177v-.958c0-.568-.422-1.048-.987-1.106a48.554 48.554 0 0 0-10.026 0 1.106 1.106 0 0 0-.987 1.106v7.635m12-6.677v6.677m0 4.5v-4.5m0 0h-12" />
+          </svg>
+          <div>
+            <p class="text-sm font-bold leading-none">Admin Panel</p>
+            <p class="text-xs text-slate-500 leading-none mt-0.5">Automotive Domain Finder</p>
+          </div>
+        </div>
+
+        <!-- Spacer -->
+        <div class="flex-1"></div>
+
+        <!-- Back to app -->
+        <a href="/" class="text-xs text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+          </svg>
+          Back to App
+        </a>
+
+        <!-- User info -->
+        <div class="flex items-center gap-2 pl-4 border-l border-slate-800">
+          <div class="w-7 h-7 rounded-full bg-orange-500/20 border border-orange-500/30 flex items-center justify-center text-xs font-bold text-orange-400"
+            x-text="(currentUser?.email || '?')[0].toUpperCase()">
+          </div>
+          <div class="hidden sm:block">
+            <p class="text-xs font-medium text-slate-200 leading-none" x-text="currentUser?.user_metadata?.full_name || currentUser?.email || ''"></p>
+            <p class="text-xs text-slate-500 leading-none mt-0.5" x-text="currentUser?.user_metadata?.full_name ? currentUser.email : ''"></p>
+          </div>
+          <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
+                       bg-orange-500/10 text-orange-400 border border-orange-500/20">
+            admin
+          </span>
+          <button @click="signOut"
+            class="ml-1 text-xs text-slate-400 hover:text-red-400 transition-colors flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+            </svg>
+            Sign Out
+          </button>
+        </div>
+      </header>
+
+      <!-- ── MAIN CONTENT ────────────────────────────────────────────────── -->
+      <main class="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+
+        <!-- Page title + stats -->
+        <div class="mb-6 flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 class="text-xl font-bold text-white">User Management</h2>
+            <p class="text-sm text-slate-400 mt-0.5">
+              <span x-text="users.length"></span> registered user<span x-text="users.length !== 1 ? 's' : ''"></span>
+            </p>
+          </div>
+          <button @click="loadUsers" :disabled="loadingUsers"
+            class="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700
+                   px-3.5 py-2 text-xs font-medium text-slate-300 transition-colors disabled:opacity-50">
+            <svg :class="loadingUsers ? 'animate-spin' : ''" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            Refresh
+          </button>
+        </div>
+
+        <!-- Global error banner -->
+        <div x-show="pageError" x-transition
+          class="mb-4 flex items-start gap-2 rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
+          <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+          </svg>
+          <span x-text="pageError"></span>
+        </div>
+
+        <!-- Global success banner -->
+        <div x-show="pageSuccess" x-transition
+          class="mb-4 flex items-start gap-2 rounded-xl bg-green-500/10 border border-green-500/20 px-4 py-3 text-sm text-green-400">
+          <svg class="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          <span x-text="pageSuccess"></span>
+        </div>
+
+        <!-- Loading skeleton -->
+        <div x-show="loadingUsers && users.length === 0" class="space-y-2">
+          <template x-for="i in 4">
+            <div class="h-16 rounded-xl bg-slate-800/60 animate-pulse"></div>
+          </template>
+        </div>
+
+        <!-- Users table -->
+        <div x-show="!loadingUsers || users.length > 0"
+          class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-slate-800 text-xs text-slate-400 uppercase tracking-wider">
+                  <th class="text-left px-4 py-3 font-semibold">User</th>
+                  <th class="text-left px-4 py-3 font-semibold hidden md:table-cell">Email</th>
+                  <th class="text-left px-4 py-3 font-semibold">Role</th>
+                  <th class="text-left px-4 py-3 font-semibold hidden lg:table-cell">Joined</th>
+                  <th class="text-left px-4 py-3 font-semibold hidden lg:table-cell">Last Sign In</th>
+                  <th class="text-right px-4 py-3 font-semibold">Actions</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800">
+                <template x-for="user in users" :key="user.id">
+                  <tr class="hover:bg-slate-800/40 transition-colors">
+
+                    <!-- Avatar + Name -->
+                    <td class="px-4 py-3">
+                      <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+                          :class="user.role === 'admin' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'bg-slate-700 text-slate-300 border border-slate-600'"
+                          x-text="initials(user)">
+                        </div>
+                        <div class="min-w-0">
+                          <p class="font-medium text-slate-200 truncate"
+                            x-text="user.full_name || '(no name)'"></p>
+                          <p class="text-xs text-slate-500 truncate md:hidden" x-text="user.email"></p>
+                        </div>
+                      </div>
+                    </td>
+
+                    <!-- Email -->
+                    <td class="px-4 py-3 text-slate-400 hidden md:table-cell">
+                      <span class="truncate block max-w-[200px]" x-text="user.email"></span>
+                    </td>
+
+                    <!-- Role badge -->
+                    <td class="px-4 py-3">
+                      <span :class="user.role === 'admin'
+                          ? 'bg-orange-500/10 text-orange-400 border-orange-500/20'
+                          : 'bg-slate-700/50 text-slate-400 border-slate-600'"
+                        class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border"
+                        x-text="user.role || 'member'">
+                      </span>
+                    </td>
+
+                    <!-- Joined -->
+                    <td class="px-4 py-3 text-slate-400 text-xs hidden lg:table-cell"
+                      x-text="formatDate(user.created_at)">
+                    </td>
+
+                    <!-- Last sign in -->
+                    <td class="px-4 py-3 text-slate-400 text-xs hidden lg:table-cell"
+                      x-text="user.last_sign_in_at ? formatDate(user.last_sign_in_at) : '—'">
+                    </td>
+
+                    <!-- Actions -->
+                    <td class="px-4 py-3">
+                      <div class="flex items-center justify-end gap-2 flex-wrap">
+
+                        <!-- Make/Remove Admin -->
+                        <button
+                          x-show="user.id !== currentUser?.id"
+                          @click="toggleRole(user)"
+                          :disabled="user._loading"
+                          :class="user.role === 'admin'
+                            ? 'border-slate-600 text-slate-400 hover:text-orange-400 hover:border-orange-500/40'
+                            : 'border-slate-600 text-slate-400 hover:text-green-400 hover:border-green-500/40'"
+                          class="rounded-lg border bg-transparent px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+                          <span x-show="user._loading">
+                            <svg class="w-3 h-3 animate-spin inline" fill="none" viewBox="0 0 24 24">
+                              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                            </svg>
+                          </span>
+                          <span x-show="!user._loading" x-text="user.role === 'admin' ? 'Remove Admin' : 'Make Admin'"></span>
+                        </button>
+
+                        <!-- Remove User -->
+                        <button
+                          x-show="user.id !== currentUser?.id"
+                          @click="removeUser(user)"
+                          :disabled="user._loading"
+                          class="rounded-lg border border-slate-700 bg-transparent px-2.5 py-1 text-xs font-medium
+                                 text-slate-500 hover:text-red-400 hover:border-red-500/40 transition-colors
+                                 disabled:opacity-40 disabled:cursor-not-allowed">
+                          Remove
+                        </button>
+
+                        <!-- Self badge -->
+                        <span x-show="user.id === currentUser?.id"
+                          class="text-xs text-slate-600 italic">you</span>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+
+                <!-- Empty state -->
+                <tr x-show="!loadingUsers && users.length === 0">
+                  <td colspan="6" class="px-4 py-12 text-center text-slate-500 text-sm">
+                    No users found.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </main>
+    </div>
+  </template>
+
+</div>
+
+<script>
+  function adminApp() {
+    return {
+      initializing: true,
+      loadingUsers: false,
+      supabase: null,
+      currentUser: null,
+      users: [],
+      pageError: '',
+      pageSuccess: '',
+      token: '',
+
+      async init() {
+        // Load Supabase config
+        try {
+          const res = await fetch('/api/config');
+          if (!res.ok) throw new Error('Config failed');
+          const cfg = await res.json();
+          this.supabase = window.supabase.createClient(cfg.supabase_url, cfg.supabase_anon_key);
+        } catch (e) {
+          window.location.href = '/login.html';
+          return;
+        }
+
+        // Check session
+        try {
+          const { data: { session } } = await this.supabase.auth.getSession();
+          if (!session) {
+            window.location.href = '/login.html';
+            return;
+          }
+          this.token = session.access_token;
+          this.currentUser = session.user;
+        } catch (e) {
+          window.location.href = '/login.html';
+          return;
+        }
+
+        // Load users (will 401 if not admin, and redirect)
+        await this.loadUsers();
+        this.initializing = false;
+      },
+
+      async loadUsers() {
+        this.loadingUsers = true;
+        this.pageError = '';
+        try {
+          const res = await fetch('/api/admin/users', {
+            headers: { 'Authorization': `Bearer ${this.token}` }
+          });
+          if (res.status === 401 || res.status === 403) {
+            window.location.href = '/login.html';
+            return;
+          }
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to load users');
+          }
+          const data = await res.json();
+          this.users = (data.users || []).map(u => ({ ...u, _loading: false }));
+        } catch (e) {
+          this.pageError = e.message || 'Failed to load users.';
+        } finally {
+          this.loadingUsers = false;
+        }
+      },
+
+      async toggleRole(user) {
+        const newRole = user.role === 'admin' ? 'member' : 'admin';
+        user._loading = true;
+        this.pageError = '';
+        this.pageSuccess = '';
+        try {
+          const res = await fetch(`/api/admin/users/${user.id}/role`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${this.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ role: newRole }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to update role');
+          }
+          user.role = newRole;
+          this.pageSuccess = `${user.email} is now ${newRole === 'admin' ? 'an admin' : 'a member'}.`;
+          setTimeout(() => { this.pageSuccess = ''; }, 3000);
+        } catch (e) {
+          this.pageError = e.message || 'Failed to update role.';
+        } finally {
+          user._loading = false;
+        }
+      },
+
+      async removeUser(user) {
+        if (!confirm(`Remove ${user.email}? This cannot be undone.`)) return;
+        user._loading = true;
+        this.pageError = '';
+        this.pageSuccess = '';
+        try {
+          const res = await fetch(`/api/admin/users/${user.id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${this.token}` },
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to remove user');
+          }
+          this.users = this.users.filter(u => u.id !== user.id);
+          this.pageSuccess = `${user.email} has been removed.`;
+          setTimeout(() => { this.pageSuccess = ''; }, 3000);
+        } catch (e) {
+          this.pageError = e.message || 'Failed to remove user.';
+          user._loading = false;
+        }
+      },
+
+      async signOut() {
+        await this.supabase.auth.signOut();
+        window.location.href = '/login.html';
+      },
+
+      initials(user) {
+        const name = user.full_name || user.email || '?';
+        return name.split(' ').map(p => p[0]).join('').toUpperCase().slice(0, 2);
+      },
+
+      formatDate(iso) {
+        if (!iso) return '—';
+        try {
+          return new Intl.DateTimeFormat('en-US', {
+            year: 'numeric', month: 'short', day: 'numeric'
+          }).format(new Date(iso));
+        } catch (_) { return iso; }
+      },
+    };
+  }
+</script>
+
+</body>
+</html>
