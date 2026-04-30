@@ -643,14 +643,18 @@ function app() {
 
     // ── API Keys ─────────────────────────────────────────────────────────────
     showApiKeys: false,
-    apiKeys: { oprKey: '', majesticKey: '', mozId: '', mozSecret: '', ahrefsKey: '', semrushKey: '' },
+    apiKeys: { oprKey: '', majesticKey: '', mozId: '', mozSecret: '', ahrefsKey: '', semrushKey: '', namecheapKey: '', namecheapUser: '', spaceshipKey: '', spaceshipSecret: '' },
     apiKeyDefs: [
-      { key: 'oprKey',      label: 'OpenPageRank Key',   placeholder: 'Free at openpagerank.com', secret: false },
-      { key: 'majesticKey', label: 'Majestic API Key',   placeholder: 'developer.majestic.com',   secret: false },
-      { key: 'mozId',       label: 'Moz Access ID',      placeholder: 'moz.com/products/api',     secret: false },
-      { key: 'mozSecret',   label: 'Moz Secret Key',     placeholder: '••••••••••••',             secret: true  },
-      { key: 'ahrefsKey',   label: 'Ahrefs API Key',     placeholder: 'Bearer token — app.ahrefs.com/api', secret: true },
-      { key: 'semrushKey',  label: 'Semrush API Key',    placeholder: 'semrush.com/api',          secret: true  },
+      { key: 'namecheapUser',   label: '🔍 Namecheap Username',      placeholder: 'Your Namecheap account username',      secret: false },
+      { key: 'namecheapKey',    label: '🔍 Namecheap API Key',        placeholder: 'Settings → API Access → Enable API',   secret: true  },
+      { key: 'spaceshipKey',    label: '🚀 Spaceship Account Email',  placeholder: 'Email used on spaceship.com',          secret: false },
+      { key: 'spaceshipSecret', label: '🚀 Spaceship API Key',        placeholder: 'spaceship.com → Settings → API',       secret: true  },
+      { key: 'oprKey',          label: 'OpenPageRank Key',            placeholder: 'Free at openpagerank.com',             secret: false },
+      { key: 'majesticKey',     label: 'Majestic API Key',            placeholder: 'developer.majestic.com',               secret: false },
+      { key: 'mozId',           label: 'Moz Access ID',               placeholder: 'moz.com/products/api',                 secret: false },
+      { key: 'mozSecret',       label: 'Moz Secret Key',              placeholder: '••••••••••••',                         secret: true  },
+      { key: 'ahrefsKey',       label: 'Ahrefs API Key',              placeholder: 'Bearer token — app.ahrefs.com/api',    secret: true  },
+      { key: 'semrushKey',      label: 'Semrush API Key',             placeholder: 'semrush.com/api',                      secret: true  },
     ],
 
     // ── Pipeline state ────────────────────────────────────────────────────────
@@ -760,6 +764,22 @@ function app() {
         class: () => 'text-slate-500 max-w-xs truncate',
       },
       {
+        key: 'check_method', label: 'Avail. Source', visible: false,
+        render: r => {
+          const m = r.check_method || '';
+          const map = {
+            namecheap: '<span class="px-1.5 py-0.5 rounded text-[10px] bg-orange-900/40 text-orange-300">Namecheap</span>',
+            spaceship:  '<span class="px-1.5 py-0.5 rounded text-[10px] bg-sky-900/40 text-sky-300">Spaceship</span>',
+            rdap:       '<span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-700 text-slate-400">RDAP</span>',
+            whois:      '<span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-700 text-slate-400">WHOIS</span>',
+            dns_only:   '<span class="px-1.5 py-0.5 rounded text-[10px] bg-yellow-900/40 text-yellow-400">DNS</span>',
+            skipped:    '<span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-700 text-slate-500">Skip</span>',
+          };
+          return map[m] || m;
+        },
+        class: () => '',
+      },
+      {
         key: 'score_wayback', label: 'Score WB', visible: false,
         class: () => 'text-slate-500',
       },
@@ -848,9 +868,13 @@ function app() {
             const end   = Math.min(i + bs, total);
             this.steps[1].detail = `Checking ${i + 1}–${end} of ${total} domains…`;
             const bRes = await this._call('/api/check', {
-              domains:         batch,
-              workers:         this.opts.workers,
-              request_timeout: this.opts.requestTimeout,
+              domains:          batch,
+              workers:          this.opts.workers,
+              request_timeout:  this.opts.requestTimeout,
+              namecheap_key:    this.apiKeys.namecheapKey.trim(),
+              namecheap_user:   this.apiKeys.namecheapUser.trim(),
+              spaceship_key:    this.apiKeys.spaceshipKey.trim(),
+              spaceship_secret: this.apiKeys.spaceshipSecret.trim(),
             });
             available.push(...(bRes.available || []));
           }

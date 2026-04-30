@@ -1,22 +1,22 @@
 """
 domain_checker.py — Step 4: Check whether domains are available for registration
 
-Strategy (no paid API, no SEMrush):
-  1. RDAP (IANA bootstrap) — authoritative, rate-limit-safe, JSON API
-  2. python-whois fallback — covers more obscure TLDs
-  3. DNS resolution check — live domain ≠ available (fast preliminary filter)
+Priority chain (highest confidence first):
+  1. Namecheap API  — real registrar answer, batch 50 domains, XML
+  2. Spaceship API  — real registrar answer, batch 50 domains, JSON REST
+  3. RDAP (IANA)    — authoritative but doesn't know redemption periods
+  4. python-whois   — fallback for TLDs not in RDAP bootstrap
+  5. DNS only       — last resort (no RDAP/WHOIS response)
 
-A domain is considered "available" when:
-  - RDAP returns a 404 (not found / not registered)
-  - OR WHOIS shows no registrant and no expiry date
-  - AND it does NOT resolve via DNS (extra sanity check)
-
-We also detect "recently expired" (grace period) via expiry date parsing.
+RDAP/WHOIS false-positives (domain shows expired but is in redemption grace
+period) are eliminated when Namecheap or Spaceship keys are provided.
 """
 
 import socket
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from xml.etree import ElementTree as ET
 
 import requests
 import whois as pywhois  # python-whois
@@ -36,6 +36,103 @@ def _resolves_dns(domain: str) -> bool:
         return True
     except (socket.gaierror, OSError):
         return False
+
+
+# ── Namecheap API batch check ────────────────────────────────────────────────
+
+def _namecheap_batch(
+    domains: list[str],
+    api_key: str,
+    username: str,
+    client_ip: str = "127.0.0.1",
+) -> dict[str, bool]:
+    """
+    Batch availability check via Namecheap domains.check (up to 50 per call).
+    Returns {domain: purchasable}.
+
+    Note: the Namecheap account must have API enabled and either whitelist
+    the server IP or allow all IPs (Settings → API Access → Whitelist).
+    """
+    results: dict[str, bool] = {}
+    session = make_session()
+
+    for i in range(0, len(domains), 50):
+        chunk = domains[i : i + 50]
+        params = {
+            "ApiUser":    username,
+            "ApiKey":     api_key,
+            "UserName":   username,
+            "Command":    "namecheap.domains.check",
+            "ClientIp":   client_ip,
+            "DomainList": ",".join(chunk),
+        }
+        resp = safe_get("https://api.namecheap.com/xml.response", session, params=params)
+        if not resp:
+            continue
+        try:
+            root = ET.fromstring(resp.text)
+            # Iterate all elements; tag looks like {namespace}DomainCheckResult
+            for el in root.iter():
+                if el.tag.endswith("DomainCheckResult"):
+                    d  = el.get("Domain", "").lower()
+                    av = el.get("Available", "false").lower() == "true"
+                    if d:
+                        results[d] = av
+        except Exception as exc:
+            logger.warning("Namecheap XML parse error: %s", exc)
+        time.sleep(0.15)
+
+    logger.info("Namecheap checked %d domains: %d available", len(results), sum(results.values()))
+    return results
+
+
+# ── Spaceship API batch check ──────────────────────────────────────────────────
+
+def _spaceship_batch(
+    domains: list[str],
+    api_key: str,
+    api_secret: str,
+) -> dict[str, bool]:
+    """
+    Batch availability check via Spaceship REST API (1 000 lookups / day free).
+    Returns {domain: purchasable}.
+
+    Spaceship API docs: https://docs.spaceship.com/
+    Auth: X-Account-Email (your account email) + X-Account-Api-Key (API key).
+    """
+    results: dict[str, bool] = {}
+    session = make_session()
+
+    for i in range(0, len(domains), 50):
+        chunk = domains[i : i + 50]
+        try:
+            resp = session.get(
+                "https://api.spaceship.com/v1/domains/availability",
+                # Spaceship uses repeated query params: ?names[]=a.com&names[]=b.com
+                params=[("names[]", d) for d in chunk],
+                headers={
+                    "X-Account-Email":   api_key,    # account email
+                    "X-Account-Api-Key": api_secret,
+                    "Accept":            "application/json",
+                },
+                timeout=config.REQUEST_TIMEOUT,
+            )
+            if resp.ok:
+                data = resp.json()
+                # Response: {"results": [{"name": "domain.com", "purchasable": true, ...}]}
+                for item in data.get("results", []):
+                    d  = item.get("name", "").lower()
+                    av = item.get("purchasable", False)
+                    if d:
+                        results[d] = bool(av)
+            else:
+                logger.warning("Spaceship API %s: %s", resp.status_code, resp.text[:200])
+        except Exception as exc:
+            logger.warning("Spaceship error: %s", exc)
+        time.sleep(0.15)
+
+    logger.info("Spaceship checked %d domains: %d available", len(results), sum(results.values()))
+    return results
 
 
 # ── RDAP check ────────────────────────────────────────────────────────────────
@@ -136,7 +233,7 @@ def _whois_status(domain: str) -> dict:
 
 # ── Main check ─────────────────────────────────────────────────────────────────
 
-def check_domain(domain: str) -> dict:
+def check_domain(domain: str, registrar_avail: dict[str, bool] | None = None) -> dict:
     """
     Full availability check.
     Returns:
@@ -147,7 +244,7 @@ def check_domain(domain: str) -> dict:
         expiry_date: str | None,
         registrar: str,
         status_flags: list[str],
-        check_method: str,    # "rdap" | "whois" | "dns_only"
+        check_method: str,    # "namecheap" | "spaceship" | "rdap" | "whois" | "dns_only"
       }
     """
     result = {
@@ -159,6 +256,12 @@ def check_domain(domain: str) -> dict:
         "status_flags": [],
         "check_method": "",
     }
+
+    # 0. Registrar API answer is highest confidence — use it directly.
+    if registrar_avail is not None and domain in registrar_avail:
+        result["available"]    = registrar_avail[domain]
+        result["check_method"] = registrar_avail.get("__source__", "registrar")
+        return result
 
     # 1. Fast DNS pre-check: if it doesn't resolve, likely available
     resolves = _resolves_dns(domain)
@@ -212,16 +315,48 @@ def check_domain(domain: str) -> dict:
 def check_domains_bulk(
     domains: list[str],
     workers: int | None = None,
+    namecheap_key: str = "",
+    namecheap_user: str = "",
+    spaceship_key: str = "",
+    spaceship_secret: str = "",
 ) -> list[dict]:
     """
     Check availability for all domains in parallel.
+
+    Priority:
+      1. Namecheap API (if namecheap_key + namecheap_user provided)
+      2. Spaceship API (if spaceship_key + spaceship_secret provided)
+      3. RDAP → WHOIS → DNS fallback (per-domain, parallel)
+
     Returns only domains where available=True.
     """
     workers = workers or config.MAX_WORKERS
+
+    # ── Pre-batch with registrar API ──────────────────────────────────────────
+    registrar_avail: dict[str, bool] = {}
+    source_label = "registrar"
+
+    if namecheap_key and namecheap_user:
+        registrar_avail = _namecheap_batch(domains, namecheap_key, namecheap_user)
+        source_label = "namecheap"
+        logger.info("Using Namecheap for %d domains", len(registrar_avail))
+    elif spaceship_key and spaceship_secret:
+        registrar_avail = _spaceship_batch(domains, spaceship_key, spaceship_secret)
+        source_label = "spaceship"
+        logger.info("Using Spaceship for %d domains", len(registrar_avail))
+
+    # Embed source label so check_domain can set check_method correctly
+    if registrar_avail:
+        registrar_avail["__source__"] = source_label  # type: ignore[assignment]
+
+    # ── Per-domain checks (parallel) ──────────────────────────────────────────
     results = []
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(check_domain, d): d for d in domains}
+        futures = {
+            pool.submit(check_domain, d, registrar_avail or None): d
+            for d in domains
+        }
         for future in as_completed(futures):
             d = futures[future]
             try:
