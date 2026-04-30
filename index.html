@@ -144,6 +144,19 @@
                   class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
               </button>
             </div>
+            <!-- Skip availability check toggle -->
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm text-slate-300">Skip Availability Check</p>
+                <p class="text-xs text-slate-500">Skip WHOIS/RDAP — avoids 504 timeout on large lists</p>
+              </div>
+              <button @click="opts.skipCheck = !opts.skipCheck"
+                :class="opts.skipCheck ? 'bg-brand' : 'bg-slate-700'"
+                class="relative w-10 h-5 rounded-full transition-colors">
+                <span :class="opts.skipCheck ? 'translate-x-5' : 'translate-x-0.5'"
+                  class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
+              </button>
+            </div>
             <!-- Skip SEO toggle -->
             <div class="flex items-center justify-between">
               <div>
@@ -605,9 +618,11 @@ function app() {
     opts: {
       fastMode:        true,
       skipFilter:      true,   // ON by default — user's list is already automotive
+      skipCheck:       false,  // skip WHOIS/RDAP availability check
       skipSEO:         false,
       workers:         5,
       maxDomainLength: 35,
+      checkBatchSize:  10,     // domains per /api/check call (avoids 504 timeout)
     },
 
     // ── API Keys ─────────────────────────────────────────────────────────────
@@ -798,17 +813,34 @@ function app() {
           return;
         }
 
-        // Step 4 — Availability check
+        // Step 4 — Availability check (skippable + batched to avoid 504)
         this.steps[1].status = 'running';
-        this.steps[1].detail = `Checking ${filteredDomains.length} domains…`;
-        const checkRes = await this._call('/api/check', {
-          domains: filteredDomains,
-          workers: this.opts.workers,
-        });
-        const available = checkRes.available;
+        let available = [];
+        if (this.opts.skipCheck) {
+          // Treat every domain as available — user knows list is already expired
+          available = filteredDomains.map(d => ({
+            domain: d, available: true, dns_resolves: false,
+            expiry_date: null, registrar: '', status_flags: [], check_method: 'skipped',
+          }));
+          this.steps[1].detail = `Availability check skipped — ${available.length} domains carried forward`;
+        } else {
+          // Send in batches of checkBatchSize to stay within serverless timeout
+          const bs = this.opts.checkBatchSize || 10;
+          const total = filteredDomains.length;
+          for (let i = 0; i < total; i += bs) {
+            const batch = filteredDomains.slice(i, i + bs);
+            const end   = Math.min(i + bs, total);
+            this.steps[1].detail = `Checking ${i + 1}–${end} of ${total} domains…`;
+            const bRes = await this._call('/api/check', {
+              domains: batch,
+              workers: Math.min(this.opts.workers, 5),
+            });
+            available.push(...(bRes.available || []));
+          }
+          this.steps[1].detail = `${available.length} available for registration (out of ${total} checked)`;
+        }
         const availableDomains = available.map(a => a.domain);
         this.steps[1].status = 'done';
-        this.steps[1].detail = `${availableDomains.length} available for registration`;
 
         if (!availableDomains.length) {
           this.steps[2].detail = 'Nothing to analyse';
