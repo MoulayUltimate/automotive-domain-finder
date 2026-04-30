@@ -645,9 +645,18 @@ function app() {
                  : 'text-slate-400',
       },
       {
-        key: 'domain_authority', label: 'DA', visible: true,
-        class: r => r.domain_authority >= 30 ? 'text-green-400 font-semibold'
-                 : r.domain_authority >= 10 ? 'text-brand'
+        key: 'effective_da', label: 'DA', visible: true,
+        render: r => {
+          const val = r.effective_da ?? 0;
+          const src = r.da_source || 'none';
+          const badge = src === 'moz'  ? '<span title="Moz Domain Authority" class="ml-1 text-slate-600 text-[9px]">MOZ</span>'
+                      : src === 'opr'  ? '<span title="Estimated from OpenPageRank ×10" class="ml-1 text-slate-600 text-[9px]">OPR~</span>'
+                      : src === 'cf'   ? '<span title="Estimated from Majestic Citation Flow" class="ml-1 text-slate-600 text-[9px]">CF~</span>'
+                      : '';
+          return `${val}${badge}`;
+        },
+        class: r => (r.effective_da||0) >= 30 ? 'text-green-400 font-semibold'
+                 : (r.effective_da||0) >= 10  ? 'text-brand'
                  : 'text-slate-500',
       },
       {

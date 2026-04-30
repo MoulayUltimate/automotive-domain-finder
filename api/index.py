@@ -208,9 +208,30 @@ async def score_step(req: ScoreRequest):
 
     scored = score_all(signals, req.relevance)
 
-    # Apply per-metric floor filters
+    # ── Compute effective_da ───────────────────────────────────────────────────
+    # Moz DA is the gold standard but requires paid credentials.  Fall back to:
+    #   OPR × 10  (OpenPageRank 0-10 → 0-100 scale)   if Moz DA = 0
+    #   Majestic Citation Flow                          if OPR also = 0
+    for s in scored:
+        moz = s.get("domain_authority", 0) or 0
+        opr = s.get("page_rank_integer", 0) or 0
+        cf  = s.get("citation_flow",    0) or 0
+        if moz > 0:
+            s["effective_da"]  = moz
+            s["da_source"]     = "moz"
+        elif opr > 0:
+            s["effective_da"]  = min(round(opr * 10), 100)
+            s["da_source"]     = "opr"
+        elif cf > 0:
+            s["effective_da"]  = min(round(cf), 100)
+            s["da_source"]     = "cf"
+        else:
+            s["effective_da"]  = 0
+            s["da_source"]     = "none"
+
+    # Apply per-metric floor filters (use effective_da for the DA filter)
     if req.min_da        > 0:
-        scored = [s for s in scored if s.get("domain_authority",  0) >= req.min_da]
+        scored = [s for s in scored if s.get("effective_da",      0) >= req.min_da]
     if req.min_tf        > 0:
         scored = [s for s in scored if s.get("trust_flow",        0) >= req.min_tf]
     if req.min_opr       > 0:
