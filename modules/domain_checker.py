@@ -2,23 +2,22 @@
 domain_checker.py — Step 4: Check whether domains are available for registration
 
 Priority chain (highest confidence first):
-  1. Namecheap API  — real registrar answer, batch 50 domains, XML
-  2. Spaceship API  — real registrar answer, batch 50 domains, JSON REST
-  3. RDAP (IANA)    — authoritative but doesn't know redemption periods
-  4. python-whois   — fallback for TLDs not in RDAP bootstrap
-  5. DNS only       — last resort (no RDAP/WHOIS response)
+  1. RDAP (IANA)   — authoritative, free, no keys.  Correctly reads redemption-
+                     period / pendingDelete / serverHold status flags so expired
+                     domains in grace periods are NOT marked as purchasable.
+  2. python-whois  — fallback for TLDs not covered by RDAP bootstrap
+  3. DNS only      — last resort (no RDAP/WHOIS response)
 
-RDAP/WHOIS false-positives (domain shows expired but is in redemption grace
-period) are eliminated when Namecheap or Spaceship keys are provided.
+Key fix (vs naive implementations): a domain can be *expired* but still
+locked in redemption period (~30 days) or pending-delete (~5 days) — during
+which it cannot be registered.  We read RDAP `status` flags explicitly and
+reject any domain carrying those "locked" statuses.
 """
 
 import socket
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from xml.etree import ElementTree as ET
 
-import requests
 import whois as pywhois  # python-whois
 
 import config
@@ -36,103 +35,6 @@ def _resolves_dns(domain: str) -> bool:
         return True
     except (socket.gaierror, OSError):
         return False
-
-
-# ── Namecheap API batch check ────────────────────────────────────────────────
-
-def _namecheap_batch(
-    domains: list[str],
-    api_key: str,
-    username: str,
-    client_ip: str = "127.0.0.1",
-) -> dict[str, bool]:
-    """
-    Batch availability check via Namecheap domains.check (up to 50 per call).
-    Returns {domain: purchasable}.
-
-    Note: the Namecheap account must have API enabled and either whitelist
-    the server IP or allow all IPs (Settings → API Access → Whitelist).
-    """
-    results: dict[str, bool] = {}
-    session = make_session()
-
-    for i in range(0, len(domains), 50):
-        chunk = domains[i : i + 50]
-        params = {
-            "ApiUser":    username,
-            "ApiKey":     api_key,
-            "UserName":   username,
-            "Command":    "namecheap.domains.check",
-            "ClientIp":   client_ip,
-            "DomainList": ",".join(chunk),
-        }
-        resp = safe_get("https://api.namecheap.com/xml.response", session, params=params)
-        if not resp:
-            continue
-        try:
-            root = ET.fromstring(resp.text)
-            # Iterate all elements; tag looks like {namespace}DomainCheckResult
-            for el in root.iter():
-                if el.tag.endswith("DomainCheckResult"):
-                    d  = el.get("Domain", "").lower()
-                    av = el.get("Available", "false").lower() == "true"
-                    if d:
-                        results[d] = av
-        except Exception as exc:
-            logger.warning("Namecheap XML parse error: %s", exc)
-        time.sleep(0.15)
-
-    logger.info("Namecheap checked %d domains: %d available", len(results), sum(results.values()))
-    return results
-
-
-# ── Spaceship API batch check ──────────────────────────────────────────────────
-
-def _spaceship_batch(
-    domains: list[str],
-    api_key: str,
-    api_secret: str,
-) -> dict[str, bool]:
-    """
-    Batch availability check via Spaceship REST API (1 000 lookups / day free).
-    Returns {domain: purchasable}.
-
-    Spaceship API docs: https://docs.spaceship.com/
-    Auth: X-Account-Email (your account email) + X-Account-Api-Key (API key).
-    """
-    results: dict[str, bool] = {}
-    session = make_session()
-
-    for i in range(0, len(domains), 50):
-        chunk = domains[i : i + 50]
-        try:
-            resp = session.get(
-                "https://api.spaceship.com/v1/domains/availability",
-                # Spaceship uses repeated query params: ?names[]=a.com&names[]=b.com
-                params=[("names[]", d) for d in chunk],
-                headers={
-                    "X-Account-Email":   api_key,    # account email
-                    "X-Account-Api-Key": api_secret,
-                    "Accept":            "application/json",
-                },
-                timeout=config.REQUEST_TIMEOUT,
-            )
-            if resp.ok:
-                data = resp.json()
-                # Response: {"results": [{"name": "domain.com", "purchasable": true, ...}]}
-                for item in data.get("results", []):
-                    d  = item.get("name", "").lower()
-                    av = item.get("purchasable", False)
-                    if d:
-                        results[d] = bool(av)
-            else:
-                logger.warning("Spaceship API %s: %s", resp.status_code, resp.text[:200])
-        except Exception as exc:
-            logger.warning("Spaceship error: %s", exc)
-        time.sleep(0.15)
-
-    logger.info("Spaceship checked %d domains: %d available", len(results), sum(results.values()))
-    return results
 
 
 # ── RDAP check ────────────────────────────────────────────────────────────────
@@ -186,11 +88,38 @@ def _rdap_status(domain: str) -> dict:
             except Exception:
                 pass
 
-    # Domain is "available" if RDAP says "inactive" or expiry is in the past
-    now = datetime.now(timezone.utc)
-    is_inactive = "inactive" in status
-    is_expired = expiry is not None and expiry < now
+    # ── Status flags that mean "NOT purchasable right now" ────────────────────
+    # Even if the domain is expired, these flags mean the registry still
+    # holds it — it's in grace/redemption/pending-delete and can't be bought.
+    LOCKED_STATUSES = {
+        "redemptionPeriod",       # ~30-day window, only original registrant can restore
+        "pendingRestore",         # registrant initiated restore — back in redemption
+        "pendingDelete",          # ~5-day window before deletion (can't be registered yet)
+        "serverHold",             # registry placed on hold (legal/compliance)
+        "clientHold",             # registrar placed on hold
+        "serverDeleteProhibited", # registry lock — not going anywhere soon
+        "serverTransferProhibited",
+        "serverUpdateProhibited",
+    }
 
+    status_lower = {s.lower() for s in status}
+    locked_flags = {s for s in LOCKED_STATUSES if s.lower() in status_lower}
+
+    if locked_flags:
+        # Domain exists and is in a non-purchasable grace/lock state
+        logger.debug("RDAP locked (%s): %s — flags: %s", domain, ", ".join(locked_flags), status)
+        return {
+            "available": False,
+            "expiry_date": expiry,
+            "status": status,
+            "registrar": registrar,
+        }
+
+    now = datetime.now(timezone.utc)
+    is_inactive = "inactive" in status_lower
+    is_expired  = expiry is not None and expiry < now
+
+    # Only mark as available when expired/inactive AND no locked flags
     available = is_inactive or is_expired
 
     return {
@@ -203,8 +132,13 @@ def _rdap_status(domain: str) -> dict:
 
 # ── python-whois fallback ─────────────────────────────────────────────────────
 
+_WHOIS_LOCKED = {
+    "redemptionperiod", "pendingrestore", "pendingdelete",
+    "serverhold",       "clienthold",
+}
+
 def _whois_status(domain: str) -> dict:
-    """WHOIS fallback for TLDs not in RDAP bootstrap."""
+    """WHOIS fallback for TLDs not covered by RDAP bootstrap."""
     try:
         w = pywhois.whois(domain)
     except Exception:
@@ -212,6 +146,16 @@ def _whois_status(domain: str) -> dict:
 
     if not w or not w.domain_name:
         return {"available": True, "expiry_date": None}
+
+    # Check for redemption / pending-delete flags in WHOIS status
+    raw_status = w.status or []
+    if isinstance(raw_status, str):
+        raw_status = [raw_status]
+    status_lower = {s.lower().split()[0] for s in raw_status if s}  # strip URL suffixes
+
+    if status_lower & _WHOIS_LOCKED:
+        logger.debug("WHOIS locked: %s — %s", domain, status_lower & _WHOIS_LOCKED)
+        return {"available": False, "expiry_date": None}
 
     expiry = w.expiration_date
     if isinstance(expiry, list):
@@ -233,18 +177,18 @@ def _whois_status(domain: str) -> dict:
 
 # ── Main check ─────────────────────────────────────────────────────────────────
 
-def check_domain(domain: str, registrar_avail: dict[str, bool] | None = None) -> dict:
+def check_domain(domain: str) -> dict:
     """
-    Full availability check.
+    Full availability check for a single domain.
     Returns:
       {
         domain: str,
-        available: bool,      # True = can be registered
+        available: bool,          # True = can be registered right now
         dns_resolves: bool,
         expiry_date: str | None,
         registrar: str,
         status_flags: list[str],
-        check_method: str,    # "namecheap" | "spaceship" | "rdap" | "whois" | "dns_only"
+        check_method: str,        # "rdap" | "whois" | "dns_only"
       }
     """
     result = {
@@ -257,56 +201,64 @@ def check_domain(domain: str, registrar_avail: dict[str, bool] | None = None) ->
         "check_method": "",
     }
 
-    # 0. Registrar API answer is highest confidence — use it directly.
-    if registrar_avail is not None and domain in registrar_avail:
-        result["available"]    = registrar_avail[domain]
-        result["check_method"] = registrar_avail.get("__source__", "registrar")
-        return result
-
-    # 1. Fast DNS pre-check: if it doesn't resolve, likely available
+    # 1. Fast DNS pre-check
     resolves = _resolves_dns(domain)
     result["dns_resolves"] = resolves
 
-    if not resolves:
-        # High probability of available — confirm with RDAP
-        rdap = _rdap_status(domain)
-        if rdap["available"] is True:
-            result.update(
-                available=True,
-                expiry_date=str(rdap["expiry_date"]) if rdap["expiry_date"] else None,
-                registrar=rdap["registrar"],
-                status_flags=rdap["status"],
-                check_method="rdap",
-            )
-            return result
+    # 2. RDAP — always attempt; it tells us locked statuses too
+    rdap = _rdap_status(domain)
 
-        # RDAP inconclusive — try WHOIS
-        wo = _whois_status(domain)
-        if wo["available"] is True:
-            result.update(
-                available=True,
-                expiry_date=str(wo["expiry_date"]) if wo["expiry_date"] else None,
-                check_method="whois",
-            )
-            return result
-
-        # If DNS doesn't resolve AND RDAP/WHOIS are inconclusive,
-        # treat as potentially available (flag it)
-        result["available"] = True
-        result["check_method"] = "dns_only"
+    if resolves:
+        # Domain has live DNS → almost certainly registered
+        # Still record RDAP metadata for context, but not available
+        if rdap["expiry_date"]:
+            result["expiry_date"] = str(rdap["expiry_date"])
+            result["registrar"]   = rdap["registrar"]
+            result["status_flags"] = rdap["status"]
+            result["check_method"] = "rdap"
+        else:
+            result["check_method"] = "dns_only"
+        result["available"] = False
         return result
 
-    # Domain resolves → probably registered.  Still check RDAP for expiry soon.
-    rdap = _rdap_status(domain)
-    if rdap["expiry_date"]:
-        result["expiry_date"] = str(rdap["expiry_date"])
-        result["registrar"] = rdap["registrar"]
-        result["status_flags"] = rdap["status"]
-        result["check_method"] = "rdap"
-    else:
-        result["check_method"] = "dns_only"
+    # No DNS → might be available
+    if rdap["available"] is True:
+        result.update(
+            available=True,
+            expiry_date=str(rdap["expiry_date"]) if rdap["expiry_date"] else None,
+            registrar=rdap["registrar"],
+            status_flags=rdap["status"],
+            check_method="rdap",
+        )
+        return result
 
-    result["available"] = False
+    if rdap["available"] is False:
+        # RDAP confirmed it's locked/registered (e.g. redemptionPeriod)
+        result["status_flags"] = rdap["status"]
+        result["registrar"]    = rdap["registrar"]
+        result["check_method"] = "rdap"
+        result["available"]    = False
+        return result
+
+    # RDAP inconclusive (None) — try WHOIS
+    wo = _whois_status(domain)
+    if wo["available"] is True:
+        result.update(
+            available=True,
+            expiry_date=str(wo["expiry_date"]) if wo["expiry_date"] else None,
+            check_method="whois",
+        )
+        return result
+
+    if wo["available"] is False:
+        result["check_method"] = "whois"
+        result["available"]    = False
+        return result
+
+    # Both RDAP and WHOIS inconclusive, DNS doesn't resolve →
+    # conservative: treat as potentially available but flag it
+    result["available"]    = True
+    result["check_method"] = "dns_only"
     return result
 
 
@@ -315,48 +267,17 @@ def check_domain(domain: str, registrar_avail: dict[str, bool] | None = None) ->
 def check_domains_bulk(
     domains: list[str],
     workers: int | None = None,
-    namecheap_key: str = "",
-    namecheap_user: str = "",
-    spaceship_key: str = "",
-    spaceship_secret: str = "",
 ) -> list[dict]:
     """
-    Check availability for all domains in parallel.
-
-    Priority:
-      1. Namecheap API (if namecheap_key + namecheap_user provided)
-      2. Spaceship API (if spaceship_key + spaceship_secret provided)
-      3. RDAP → WHOIS → DNS fallback (per-domain, parallel)
-
+    Check availability for all domains in parallel using RDAP → WHOIS → DNS.
+    Correctly rejects domains in redemptionPeriod / pendingDelete / serverHold.
     Returns only domains where available=True.
     """
     workers = workers or config.MAX_WORKERS
-
-    # ── Pre-batch with registrar API ──────────────────────────────────────────
-    registrar_avail: dict[str, bool] = {}
-    source_label = "registrar"
-
-    if namecheap_key and namecheap_user:
-        registrar_avail = _namecheap_batch(domains, namecheap_key, namecheap_user)
-        source_label = "namecheap"
-        logger.info("Using Namecheap for %d domains", len(registrar_avail))
-    elif spaceship_key and spaceship_secret:
-        registrar_avail = _spaceship_batch(domains, spaceship_key, spaceship_secret)
-        source_label = "spaceship"
-        logger.info("Using Spaceship for %d domains", len(registrar_avail))
-
-    # Embed source label so check_domain can set check_method correctly
-    if registrar_avail:
-        registrar_avail["__source__"] = source_label  # type: ignore[assignment]
-
-    # ── Per-domain checks (parallel) ──────────────────────────────────────────
     results = []
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(check_domain, d, registrar_avail or None): d
-            for d in domains
-        }
+        futures = {pool.submit(check_domain, d): d for d in domains}
         for future in as_completed(futures):
             d = futures[future]
             try:
@@ -365,12 +286,12 @@ def check_domains_bulk(
                     results.append(res)
                     logger.info("AVAILABLE: %s (method=%s)", d, res["check_method"])
                 else:
-                    logger.debug("Registered: %s", d)
+                    logger.debug("Registered/Locked: %s flags=%s", d, res.get("status_flags"))
             except Exception as exc:
                 logger.error("Error checking %s: %s", d, exc)
 
     logger.info(
-        "Domain availability check: %d available out of %d checked",
+        "Domain availability: %d available out of %d checked",
         len(results),
         len(domains),
     )
