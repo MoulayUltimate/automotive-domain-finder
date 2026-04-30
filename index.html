@@ -35,7 +35,7 @@
 </head>
 
 <body class="h-full bg-slate-950 text-slate-200 font-sans antialiased">
-<div x-data="app()" x-cloak class="flex flex-col h-full">
+<div x-data="app()" x-init="init()" x-cloak class="flex flex-col h-full">
 
   <!-- ── HEADER ────────────────────────────────────────────────────── -->
   <header class="shrink-0 border-b border-slate-800 bg-slate-900/80 backdrop-blur px-6 py-3 flex items-center gap-3">
@@ -45,9 +45,37 @@
     </svg>
     <h1 class="text-lg font-bold tracking-tight">Automotive Domain Finder</h1>
     <span class="text-xs text-slate-500 mt-0.5">Expired domain hunter for the car niche</span>
-    <div class="ml-auto flex items-center gap-2 text-xs text-slate-500">
+    <div class="ml-auto flex items-center gap-3 text-xs text-slate-500">
       <span x-show="results.length" x-text="`${results.length} results`" class="text-brand font-medium"></span>
-      <a href="https://github.com" target="_blank" class="hover:text-slate-300 transition-colors">Docs</a>
+
+      <template x-if="authUser">
+        <div class="flex items-center gap-2 pl-3 border-l border-slate-800">
+          <a x-show="authUser.role === 'admin'" href="/admin.html"
+             class="hidden sm:flex items-center gap-1 rounded-md border border-orange-500/30 bg-orange-500/10
+                    px-2.5 py-1 text-orange-400 hover:bg-orange-500/20 transition-colors font-medium">
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
+            Admin
+          </a>
+          <div class="flex items-center gap-1.5">
+            <div class="w-6 h-6 rounded-full bg-orange-500/20 border border-orange-500/30 flex items-center justify-center text-[10px] font-bold text-orange-400"
+              x-text="(authUser.full_name || authUser.email)[0].toUpperCase()"></div>
+            <span class="hidden md:inline text-slate-400" x-text="authUser.email"></span>
+            <span x-show="authUser.role === 'admin'"
+                  class="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-orange-500/10 text-orange-400 border border-orange-500/20">
+              admin
+            </span>
+          </div>
+          <button @click="authSignOut()" class="text-slate-500 hover:text-red-400 transition-colors" title="Sign Out">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+            </svg>
+          </button>
+        </div>
+      </template>
     </div>
   </header>
 
@@ -621,6 +649,34 @@
 <script>
 function app() {
   return {
+    // ── Auth ─────────────────────────────────────────────────────────────────
+    authUser:   null,
+    _authToken: '',
+
+    init() {
+      const stored = localStorage.getItem('adf_auth');
+      if (!stored) { window.location.href = '/login.html'; return; }
+      try {
+        const { token, user } = JSON.parse(stored);
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        if (!payload.exp || payload.exp * 1000 < Date.now()) {
+          localStorage.removeItem('adf_auth');
+          window.location.href = '/login.html';
+          return;
+        }
+        this._authToken = token;
+        this.authUser   = user;
+      } catch (_) {
+        localStorage.removeItem('adf_auth');
+        window.location.href = '/login.html';
+      }
+    },
+
+    authSignOut() {
+      localStorage.removeItem('adf_auth');
+      window.location.href = '/login.html';
+    },
+
     // ── Input ────────────────────────────────────────────────────────────────
     domainsText: '',
 
@@ -985,14 +1041,21 @@ function app() {
 
     async _call(url, body) {
       let res;
+      const headers = { 'Content-Type': 'application/json' };
+      if (this._authToken) headers['Authorization'] = `Bearer ${this._authToken}`;
       try {
         res = await fetch(url, {
           method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body:    JSON.stringify(body),
         });
       } catch (e) {
         throw new Error(`Network error reaching ${url}: ${e.message}`);
+      }
+      if (res.status === 401) {
+        localStorage.removeItem('adf_auth');
+        window.location.href = '/login.html';
+        throw new Error('Session expired. Redirecting to login…');
       }
       if (!res.ok) {
         const friendly = {
