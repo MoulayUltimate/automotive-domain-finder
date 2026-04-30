@@ -97,9 +97,13 @@ async def filter_step(req: FilterRequest):
 # ── /api/check ────────────────────────────────────────────────────────────────
 
 class CheckRequest(BaseModel):
-    domains:         list[str]
-    workers:         int = Field(default=15, ge=1, le=30)
-    request_timeout: int = Field(default=7,  ge=2, le=30)   # per-request HTTP timeout
+    domains:          list[str]
+    workers:          int = Field(default=15, ge=1, le=30)
+    request_timeout:  int = Field(default=7,  ge=2, le=30)   # per-request HTTP timeout
+    namecheap_key:    str = ""
+    namecheap_user:   str = ""
+    spaceship_key:    str = ""
+    spaceship_secret: str = ""
 
 
 @app.post("/api/check")
@@ -113,7 +117,14 @@ async def check_step(req: CheckRequest):
     if not domains:
         raise HTTPException(status_code=422, detail="No domains provided.")
 
-    available = check_domains_bulk(domains, workers=req.workers)
+    available = check_domains_bulk(
+        domains,
+        workers=req.workers,
+        namecheap_key=req.namecheap_key,
+        namecheap_user=req.namecheap_user,
+        spaceship_key=req.spaceship_key,
+        spaceship_secret=req.spaceship_secret,
+    )
     return {
         "available":       available,
         "total_input":     len(domains),
