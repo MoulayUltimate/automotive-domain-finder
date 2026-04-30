@@ -66,10 +66,12 @@ def _openpagerank(domains: list[str]) -> dict[str, dict]:
     """
     Batch query OpenPageRank for up to 100 domains.
     Returns {domain: {"page_rank_integer": int, "page_rank_decimal": float}}
+    Logs explicit warnings if the key is invalid / quota exceeded.
     """
     if not config.OPENPAGERANK_API_KEY:
+        logger.info("OpenPageRank: no key configured — skipping (DA fallback will use Majestic CF)")
         return {}
-    # API supports up to 100 domains per call
+
     results = {}
     chunk_size = 100
     session = make_session()
@@ -84,7 +86,28 @@ def _openpagerank(domains: list[str]) -> dict[str, dict]:
                 headers={"API-OPR": config.OPENPAGERANK_API_KEY},
                 timeout=config.REQUEST_TIMEOUT,
             )
-            data = resp.json()
+
+            # Detect HTTP / quota / auth failures
+            if resp.status_code == 401 or resp.status_code == 403:
+                logger.warning("OpenPageRank: invalid API key (%s)", resp.status_code)
+                return {}
+            if resp.status_code == 429:
+                logger.warning("OpenPageRank: rate limit / daily quota exceeded")
+                return results  # keep what we already have
+
+            try:
+                data = resp.json()
+            except Exception:
+                logger.warning("OpenPageRank: non-JSON response (status %s): %s",
+                               resp.status_code, resp.text[:200])
+                continue
+
+            # OpenPageRank embeds errors in the JSON body
+            if data.get("status_code") in (401, 403):
+                logger.warning("OpenPageRank API rejected key: %s",
+                               data.get("error", "Invalid key"))
+                return {}
+
             for entry in data.get("response", []):
                 d = entry.get("domain", "")
                 if d:
@@ -93,9 +116,10 @@ def _openpagerank(domains: list[str]) -> dict[str, dict]:
                         "page_rank_decimal": entry.get("page_rank_decimal", 0.0),
                     }
         except Exception as e:
-            logger.warning("OpenPageRank error: %s", e)
+            logger.warning("OpenPageRank request error: %s", e)
         time.sleep(0.3)
 
+    logger.info("OpenPageRank loaded data for %d / %d domains", len(results), len(domains))
     return results
 
 
@@ -219,17 +243,23 @@ def _in_commoncrawl(domain: str) -> bool:
 
 # ── Main estimator ─────────────────────────────────────────────────────────────
 
-def estimate_seo(domain: str, opr_cache: dict | None = None, majestic_cache: dict | None = None) -> dict:
+def estimate_seo(
+    domain: str,
+    opr_cache: dict | None = None,
+    majestic_cache: dict | None = None,
+    deep: bool = True,
+) -> dict:
     """
-    Gather all available SEO signals for one domain.
-    Returns a dict of raw signals (scoring happens in scorer.py).
+    Gather SEO signals for one domain.
+    deep=False skips DuckDuckGo + CommonCrawl (the slowest calls) — useful for
+    very large batches that need to fit within Vercel's 60-second timeout.
     """
     opr_cache = opr_cache or {}
     majestic_cache = majestic_cache or {}
 
     signals: dict = {"domain": domain}
 
-    # Wayback
+    # Wayback (fast, no key)
     wb = _wayback_data(domain)
     signals.update(
         wayback_snapshots=wb["snapshots"],
@@ -246,40 +276,48 @@ def estimate_seo(domain: str, opr_cache: dict | None = None, majestic_cache: dic
     # Majestic (from pre-loaded cache)
     maj = majestic_cache.get(domain, {})
     signals["citation_flow"] = maj.get("citation_flow", 0)
-    signals["trust_flow"] = maj.get("trust_flow", 0)
-    signals["backlinks"] = maj.get("backlinks", 0)
-    signals["ref_domains"] = maj.get("ref_domains", 0)
+    signals["trust_flow"]    = maj.get("trust_flow", 0)
+    signals["backlinks"]     = maj.get("backlinks", 0)
+    signals["ref_domains"]   = maj.get("ref_domains", 0)
 
     # Moz (individual call — only if configured)
     moz = _moz_domain_authority(domain)
-    signals["domain_authority"] = moz.get("domain_authority", 0)
+    signals["domain_authority"]   = moz.get("domain_authority", 0)
     signals["moz_linking_domains"] = moz.get("linking_domains", 0)
 
-    # Index & crawl presence
-    signals["is_indexed_ddg"] = _is_indexed(domain)
-    signals["in_commoncrawl"] = _in_commoncrawl(domain)
+    # Index & crawl presence (slowest checks — skip for big batches)
+    if deep:
+        signals["is_indexed_ddg"] = _is_indexed(domain)
+        signals["in_commoncrawl"] = _in_commoncrawl(domain)
+    else:
+        signals["is_indexed_ddg"] = False
+        signals["in_commoncrawl"] = False
 
-    logger.debug("SEO signals for %s: %s", domain, signals)
     return signals
 
 
-def estimate_seo_bulk(domains: list[str], workers: int | None = None) -> list[dict]:
+def estimate_seo_bulk(
+    domains: list[str],
+    workers: int | None = None,
+    deep: bool = True,
+) -> list[dict]:
     """
     Batch SEO estimation with pre-loaded OPR + Majestic caches.
+    deep=False skips DDG and CommonCrawl checks (about 3× faster).
     """
     workers = workers or config.MAX_WORKERS
 
-    # Pre-load batch APIs
-    logger.info("Pre-loading OpenPageRank data for %d domains…", len(domains))
+    # Pre-load batch APIs (single API call for many domains)
+    logger.info("Pre-loading OpenPageRank for %d domains…", len(domains))
     opr_cache = _openpagerank(domains)
 
-    logger.info("Pre-loading Majestic data for %d domains…", len(domains))
+    logger.info("Pre-loading Majestic for %d domains…", len(domains))
     majestic_cache = _majestic_bulk(domains)
 
     results = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(estimate_seo, d, opr_cache, majestic_cache): d
+            pool.submit(estimate_seo, d, opr_cache, majestic_cache, deep): d
             for d in domains
         }
         for future in as_completed(futures):
@@ -287,7 +325,7 @@ def estimate_seo_bulk(domains: list[str], workers: int | None = None) -> list[di
             try:
                 results.append(future.result())
             except Exception as exc:
-                logger.error("SEO estimation error for %s: %s", d, exc)
+                logger.error("SEO error for %s: %s", d, exc)
                 results.append({"domain": d})
 
     return results

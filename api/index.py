@@ -132,6 +132,7 @@ class SEORequest(BaseModel):
     moz_id:           str = ""
     moz_secret:       str = ""
     no_seo:           bool = False
+    deep_seo:         bool = False   # if True, do DDG + CommonCrawl (slow!)
 
 
 @app.post("/api/seo")
@@ -153,7 +154,7 @@ async def seo_step(req: SEORequest):
         raise HTTPException(status_code=422, detail="No domains provided.")
 
     if req.no_seo:
-        # Lightweight mode: Wayback + index checks only (no external API keys needed)
+        # Lightweight mode: just Wayback (no external keys, no DDG/CC slow calls)
         signals = []
         for d in domains:
             wb = _wayback_data(d)
@@ -163,8 +164,8 @@ async def seo_step(req: SEORequest):
                 "wayback_first_seen":   wb["first_seen"],
                 "wayback_last_seen":    wb["last_seen"],
                 "has_archive_history":  wb["snapshots"] >= config.WAYBACK_MIN_SNAPSHOTS,
-                "is_indexed_ddg":       _is_indexed(d),
-                "in_commoncrawl":       _in_commoncrawl(d),
+                "is_indexed_ddg":       False,
+                "in_commoncrawl":       False,
                 "page_rank_integer":    0,
                 "page_rank_decimal":    0.0,
                 "citation_flow":        0,
@@ -176,7 +177,7 @@ async def seo_step(req: SEORequest):
             })
         return {"signals": signals, "total": len(signals)}
 
-    signals = estimate_seo_bulk(domains, workers=req.workers)
+    signals = estimate_seo_bulk(domains, workers=req.workers, deep=req.deep_seo)
     return {"signals": signals, "total": len(signals)}
 
 
