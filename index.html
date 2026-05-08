@@ -708,9 +708,9 @@ function app() {
       deepSEO:         false,  // adds DuckDuckGo + CommonCrawl (slow, default off)
       workers:         15,     // threads for I/O-bound HTTP — higher = faster
       maxDomainLength: 35,
-      checkBatchSize:  20,     // domains per /api/check call (keeps call < 30s)
-      seoBatchSize:    15,     // domains per /api/seo call (slower per-domain)
-      requestTimeout:  7,      // per-HTTP-request timeout in seconds
+      checkBatchSize:  10,     // domains per /api/check call (auto-shrinks on 504)
+      seoBatchSize:    10,     // domains per /api/seo call (auto-shrinks on 504)
+      requestTimeout:  5,      // per-HTTP-request timeout in seconds
     },
 
     // ── API Keys ─────────────────────────────────────────────────────────────
@@ -953,21 +953,15 @@ function app() {
           }));
           this.steps[1].detail = `Availability check skipped — ${available.length} domains carried forward`;
         } else {
-          // Send in batches of checkBatchSize to stay within serverless timeout
-          const bs = this.opts.checkBatchSize || 10;
-          const total = filteredDomains.length;
-          for (let i = 0; i < total; i += bs) {
-            const batch = filteredDomains.slice(i, i + bs);
-            const end   = Math.min(i + bs, total);
-            this.steps[1].detail = `Checking ${i + 1}–${end} of ${total} domains…`;
-            const bRes = await this._call('/api/check', {
-              domains:         batch,
-              workers:         this.opts.workers,
-              request_timeout: this.opts.requestTimeout,
-            });
-            available.push(...(bRes.available || []));
-          }
-          this.steps[1].detail = `${available.length} available for registration (out of ${total} checked)`;
+          // Run availability check resiliently:
+          //   • parallel batches (concurrency-limited)
+          //   • on 504/timeout → split batch in half and retry
+          //   • on persistent failure → log and skip those domains, keep going
+          available = await this._runChecksResilient(
+            filteredDomains, this.opts.checkBatchSize || 10,
+          );
+          this.steps[1].detail =
+            `${available.length} available — ${this.steps[1]._timeouts || 0} batches timed out (out of ${filteredDomains.length} checked)`;
         }
         const availableDomains = available.map(a => a.domain);
         this.steps[1].status = 'done';
@@ -978,28 +972,11 @@ function app() {
           return;
         }
 
-        // Step 5 — SEO signals (batched to stay within Vercel's 60s timeout)
+        // Step 5 — SEO signals (resilient parallel batches)
         this.steps[2].status = 'running';
-        const seoBatch  = this.opts.seoBatchSize || 15;
-        const seoTotal  = availableDomains.length;
-        const seoSignals = [];
-        for (let i = 0; i < seoTotal; i += seoBatch) {
-          const batch = availableDomains.slice(i, i + seoBatch);
-          const end   = Math.min(i + seoBatch, seoTotal);
-          this.steps[2].detail = `Fetching SEO data ${i + 1}–${end} of ${seoTotal}…`;
-          const bRes = await this._call('/api/seo', {
-            domains:          batch,
-            workers:          this.opts.workers,
-            request_timeout:  this.opts.requestTimeout,
-            no_seo:           this.opts.skipSEO,
-            deep_seo:         this.opts.deepSEO,
-            openpagerank_key: this.apiKeys.oprKey.trim(),
-            majestic_key:     this.apiKeys.majesticKey.trim(),
-            moz_id:           this.apiKeys.mozId.trim(),
-            moz_secret:       this.apiKeys.mozSecret.trim(),
-          });
-          seoSignals.push(...(bRes.signals || []));
-        }
+        const seoSignals = await this._runSeoResilient(
+          availableDomains, this.opts.seoBatchSize || 15,
+        );
         const seoRes = { signals: seoSignals, total: seoSignals.length };
         this.steps[2].detail = `SEO data fetched for ${seoRes.total} domains`;
         // Merge availability data into signals
@@ -1037,6 +1014,107 @@ function app() {
       } finally {
         this.running = false;
       }
+    },
+
+    async _runSeoResilient(domains, batchSize) {
+      const total       = domains.length;
+      const concurrency = Math.min(3, Math.ceil(total / batchSize));
+      const batches     = [];
+      for (let i = 0; i < total; i += batchSize) batches.push(domains.slice(i, i + batchSize));
+
+      let processed = 0, timeouts = 0;
+      const out = [];
+
+      const runOne = async (batch, depth = 0) => {
+        try {
+          const bRes = await this._call('/api/seo', {
+            domains:          batch,
+            workers:          this.opts.workers,
+            request_timeout:  this.opts.requestTimeout,
+            no_seo:           this.opts.skipSEO,
+            deep_seo:         this.opts.deepSEO,
+            openpagerank_key: this.apiKeys.oprKey.trim(),
+            majestic_key:     this.apiKeys.majesticKey.trim(),
+            moz_id:           this.apiKeys.mozId.trim(),
+            moz_secret:       this.apiKeys.mozSecret.trim(),
+          });
+          out.push(...(bRes.signals || []));
+        } catch (e) {
+          if (depth < 2 && batch.length > 1 && /timeout|504|502|gateway/i.test(e.message)) {
+            const mid = Math.floor(batch.length / 2);
+            await runOne(batch.slice(0, mid),  depth + 1);
+            await runOne(batch.slice(mid),     depth + 1);
+          } else {
+            timeouts++;
+            // Push placeholder signals so scoring still works for these domains
+            for (const d of batch) out.push({ domain: d });
+          }
+        }
+        processed += batch.length;
+        this.steps[2].detail =
+          `Fetching SEO ${processed}/${total}${timeouts ? ` · ${timeouts} timeouts` : ''}`;
+      };
+
+      const queue = batches.slice();
+      const workers = Array.from({ length: concurrency }, async () => {
+        while (queue.length) {
+          const next = queue.shift();
+          if (next) await runOne(next);
+        }
+      });
+      await Promise.all(workers);
+      return out;
+    },
+
+    // Resilient parallel availability check.
+    //   - Splits the full domain list into batches of `batchSize`
+    //   - Runs up to `concurrency` batches in parallel
+    //   - Retries each batch up to 2× with progressively smaller chunks on 504
+    //   - Counts batches that fail terminally; results are merged
+    async _runChecksResilient(domains, batchSize) {
+      const total       = domains.length;
+      const concurrency = Math.min(4, Math.ceil(total / batchSize));   // 4 batches in flight
+      const batches     = [];
+      for (let i = 0; i < total; i += batchSize) batches.push(domains.slice(i, i + batchSize));
+
+      let processed = 0, timeouts = 0;
+      const results = [];
+
+      const runOne = async (batch, depth = 0) => {
+        try {
+          const bRes = await this._call('/api/check', {
+            domains:         batch,
+            workers:         this.opts.workers,
+            request_timeout: this.opts.requestTimeout,
+          });
+          results.push(...(bRes.available || []));
+        } catch (e) {
+          // 504 / network errors → split and retry once
+          if (depth < 2 && batch.length > 1 && /timeout|504|502|gateway/i.test(e.message)) {
+            const mid = Math.floor(batch.length / 2);
+            await runOne(batch.slice(0, mid),  depth + 1);
+            await runOne(batch.slice(mid),     depth + 1);
+          } else {
+            timeouts++;
+            console.warn(`Batch failed permanently (${batch.length} domains):`, e.message);
+          }
+        }
+        processed += batch.length;
+        this.steps[1].detail =
+          `Checking ${processed}/${total} — found ${results.length} available${timeouts ? ` · ${timeouts} timeouts` : ''}`;
+        this.steps[1]._timeouts = timeouts;
+      };
+
+      // Worker pool — pull batches off the queue, run them with bounded concurrency
+      const queue = batches.slice();
+      const workers = Array.from({ length: concurrency }, async () => {
+        while (queue.length) {
+          const next = queue.shift();
+          if (next) await runOne(next);
+        }
+      });
+      await Promise.all(workers);
+      return results;
     },
 
     async _call(url, body) {
