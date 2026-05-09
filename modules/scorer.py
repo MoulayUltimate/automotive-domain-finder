@@ -16,6 +16,9 @@ from modules.utils import get_logger
 
 logger = get_logger("scorer")
 
+# TLDs that can never be registered by the public — always skip them
+BLOCKED_TLDS = {"gov", "mil", "edu"}
+
 # Patterns strongly suggesting spammy / parked domains
 SPAM_PATTERNS = re.compile(
     r"(free-?seo|buy-?domain|parked|domain-?for-?sale|"
@@ -151,6 +154,10 @@ def _is_spammy(domain: str, signals: dict) -> bool:
     """True if the domain should be discarded as spam / junk."""
     stem = domain.split(".")[0]
     tld = domain.split(".")[-1]
+
+    # Government / military / education TLDs — cannot be privately registered
+    if tld in BLOCKED_TLDS:
+        return True
 
     # Spam pattern in name
     if SPAM_PATTERNS.search(domain):
