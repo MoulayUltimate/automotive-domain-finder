@@ -183,6 +183,85 @@ def lookup_bulk(domains: list[str]) -> dict[str, dict]:
     return {d: lookup(d) for d in domains}
 
 
+def search_by_keyword(
+    keyword: str,
+    limit: int = 400,
+    min_ref_subnets: int = 5,
+    tlds: list[str] | None = None,
+) -> list[dict]:
+    """
+    Find REAL domains in Majestic Million whose stem contains `keyword`.
+
+    Every match is a domain that had measurable backlink authority at some
+    point — so even if it's currently expired, it almost certainly had
+    real traffic during its active years. This is the killer signal the
+    keyword combo-generator can't produce.
+
+    Returns rows sorted by ref_subnets descending (highest authority first):
+        [{ "domain": "carshub.com", "ref_subnets": 1234, "global_rank": 5421, "tld": "com" }, ...]
+    """
+    kw = keyword.lower().strip()
+    if not kw:
+        return []
+
+    tld_filter = {t.lstrip(".").lower() for t in tlds} if tlds else None
+    hits: list[dict] = []
+    for d, rec in get_index().items():
+        # Domain stem = part before the first dot
+        stem = d.split(".", 1)[0]
+        if kw not in stem:
+            continue
+        if rec["ref_subnets"] < min_ref_subnets:
+            continue
+        if tld_filter and rec["tld"] not in tld_filter:
+            continue
+        hits.append({
+            "domain":       d,
+            "ref_subnets":  rec["ref_subnets"],
+            "ref_ips":      rec["ref_ips"],
+            "global_rank":  rec["global_rank"],
+            "tld":          rec["tld"],
+        })
+
+    hits.sort(key=lambda r: -r["ref_subnets"])
+    return hits[:limit]
+
+
+def search_by_keywords(
+    keywords: list[str],
+    per_keyword_limit: int = 400,
+    min_ref_subnets: int = 5,
+    tlds: list[str] | None = None,
+) -> dict:
+    """
+    Bulk version: searches multiple keywords, dedupes domains across keywords,
+    and tags each hit with which keyword matched it first.
+
+    Returns:
+        {
+          "candidates":   [{"domain": "...", "matched_keyword": "...", ...}, ...],
+          "domains":      ["domain1", "domain2", ...],
+          "keyword_map":  {"domain1": "kw1", ...},
+          "total":        int,
+        }
+    """
+    seen: set[str] = set()
+    candidates: list[dict] = []
+    for kw in keywords:
+        for rec in search_by_keyword(kw, per_keyword_limit, min_ref_subnets, tlds):
+            d = rec["domain"]
+            if d in seen:
+                continue
+            seen.add(d)
+            candidates.append({**rec, "matched_keyword": kw, "pattern": "majestic_million"})
+    return {
+        "candidates":   candidates,
+        "domains":      [c["domain"] for c in candidates],
+        "keyword_map":  {c["domain"]: c["matched_keyword"] for c in candidates},
+        "total":        len(candidates),
+    }
+
+
 def status() -> dict:
     """Quick health check — used by /api/health and the UI status badge."""
     return {

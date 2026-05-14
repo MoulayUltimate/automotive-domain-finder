@@ -117,6 +117,26 @@
 
         <div>
           <label class="flex justify-between text-xs text-slate-400">
+            <span>Min real-domain authority (ref subnets)</span>
+            <span class="text-emerald-300" x-text="filters.minRefSubnets"></span>
+          </label>
+          <input type="range" min="0" max="500" step="5" x-model.number="filters.minRefSubnets" class="w-full" />
+          <p class="text-[11px] text-slate-500">Only include real domains with at least this much past traffic / backlink authority.</p>
+        </div>
+
+        <label class="flex items-center gap-2 text-xs">
+          <input type="checkbox" x-model="filters.includeHistorical" class="accent-emerald-500" />
+          <span class="font-medium text-emerald-400">Search real domains (Majestic Million)</span>
+        </label>
+        <p class="text-[11px] text-slate-500 -mt-1">Finds domains that <em>actually had traffic</em>. Off = invented prefix/suffix combos only.</p>
+
+        <label class="flex items-center gap-2 text-xs">
+          <input type="checkbox" x-model="filters.includeCombos" class="accent-brand" />
+          <span>Also generate prefix/suffix combos</span>
+        </label>
+
+        <div>
+          <label class="flex justify-between text-xs text-slate-400">
             <span>Min authority</span>
             <span class="text-slate-300" x-text="filters.minAuthority"></span>
           </label>
@@ -311,9 +331,12 @@ function kwApp() {
       minAuthority:       0,
       minBacklinks:       0,
       maxSpam:            70,
+      minRefSubnets:      10,      // require real backlink history
       recentArchiveOnly:  false,
       onlyAvailable:      true,
       skipSEO:            false,
+      includeHistorical:  true,    // search real domains (Majestic Million)
+      includeCombos:      true,    // generate prefix/suffix permutations
       useWhoisXML:        false,   // OFF by default — preserves free 500-credit budget
       whoisxmlMax:        50,      // hard cap per run when enabled
     },
@@ -370,16 +393,22 @@ function kwApp() {
       this.resetSteps();
       this.running = true;
       try {
-        // Step 1 — generate candidates
+        // Step 1 — generate candidates (real domains + optional combos)
         this.steps[0].status = 'running';
         const gen = await this._call('/api/keyword-generate', {
-          keywords:        this.keywords,
-          tlds:            this.filters.tlds,
-          max_per_keyword: 180,
-          include_combos:  true,
+          keywords:           this.keywords,
+          tlds:               this.filters.tlds,
+          max_per_keyword:    180,
+          include_combos:     this.filters.includeCombos,
+          include_historical: this.filters.includeHistorical,
+          historical_limit:   400,
+          min_ref_subnets:    this.filters.minRefSubnets,
         });
         this.steps[0].status = 'done';
-        this.steps[0].detail = `${gen.total} candidate domains generated`;
+        this.steps[0].detail =
+          `${gen.total} candidates · ${gen.total_historical||0} real domains (with traffic) + ${gen.total_combos||0} generated combos`;
+        // Stash historical metadata so we can show ref_subnets in the results table
+        this._histMeta = gen.historical_meta || {};
 
         if (!gen.total) { this.error = 'No candidates generated.'; return; }
 
@@ -454,12 +483,23 @@ function kwApp() {
         this.steps[4].status = 'done';
         this.steps[4].detail = `${seoSignals.length} signals collected`;
 
-        // Step 6 — quality + traffic scoring (enrich rows with WhoisXML data)
+        // Step 6 — quality + traffic scoring (enrich rows with WhoisXML + historical data)
         this.steps[5].status = 'running';
+        const histMeta = this._histMeta || {};
         for (const s of seoSignals) {
           s.expiry_date     = expiryMap[s.domain] || '';
           s.available       = true;
           s.matched_keyword = gen.keyword_map[s.domain] || '';
+
+          // Inject Majestic Million ref_subnets if this domain came from
+          // the historical search and SEO didn't already set ref_domains.
+          const h = histMeta[s.domain];
+          if (h && !s.ref_domains) {
+            s.ref_domains    = h.ref_subnets || 0;
+            s.global_rank    = h.global_rank || 0;
+            s.has_historical = true;
+          }
+
           const e = enrichedByDomain[s.domain];
           if (e) {
             s.created_date          = e.created_date || '';

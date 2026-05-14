@@ -468,10 +468,15 @@ async def whoisxml_step(
 # these into /api/check → /api/seo → /api/score for the full pipeline.
 
 class KeywordGenerateRequest(BaseModel):
-    keywords:        list[str]
-    tlds:            list[str] | None = None
-    max_per_keyword: int  = Field(default=200, ge=10, le=600)
-    include_combos:  bool = True
+    keywords:           list[str]
+    tlds:               list[str] | None = None
+    max_per_keyword:    int  = Field(default=200, ge=10, le=600)
+    include_combos:     bool = True
+
+    # Search REAL domains from Majestic Million (only these had real traffic)
+    include_historical: bool = True
+    historical_limit:   int  = Field(default=400, ge=10, le=2000)
+    min_ref_subnets:    int  = Field(default=5,   ge=0,  le=10_000)
 
 
 @app.post("/api/keyword-generate")
@@ -485,20 +490,56 @@ async def keyword_generate_step(
     if not seeds:
         raise HTTPException(status_code=422, detail="No keywords provided.")
 
-    candidates = generate_candidates(
-        seeds,
-        tlds=req.tlds,
-        max_per_keyword=req.max_per_keyword,
-        include_combos=req.include_combos,
-    )
-    # Build a quick lookup so the SPA can attach matched_keyword to each
-    # available domain after /api/check returns.
+    combo_cands: list[dict] = []
+    if req.include_combos:
+        combo_cands = generate_candidates(
+            seeds,
+            tlds=req.tlds,
+            max_per_keyword=req.max_per_keyword,
+            include_combos=True,
+        )
+
+    historical_cands: list[dict] = []
+    historical_meta:  dict[str, dict] = {}
+    if req.include_historical:
+        try:
+            from modules.free_backlinks import search_by_keywords  # noqa: PLC0415
+            hist = search_by_keywords(
+                seeds,
+                per_keyword_limit=req.historical_limit,
+                min_ref_subnets=req.min_ref_subnets,
+                tlds=req.tlds,
+            )
+            historical_cands = hist["candidates"]
+            # Stash ref_subnets/global_rank so the SPA can show "had X ref domains"
+            for c in historical_cands:
+                historical_meta[c["domain"]] = {
+                    "ref_subnets": c.get("ref_subnets", 0),
+                    "global_rank": c.get("global_rank", 0),
+                }
+        except Exception as e:
+            import logging
+            logging.getLogger("api").warning("Historical search failed: %s", e)
+
+    # Merge — historical first (they're the high-value ones).
+    seen: set[str] = set()
+    candidates: list[dict] = []
+    for c in historical_cands + combo_cands:
+        d = c["domain"]
+        if d in seen:
+            continue
+        seen.add(d)
+        candidates.append(c)
+
     return {
-        "candidates":   candidates,
-        "domains":      [c["domain"] for c in candidates],
-        "keyword_map":  {c["domain"]: c["matched_keyword"] for c in candidates},
-        "total":        len(candidates),
-        "keywords":     seeds,
+        "candidates":         candidates,
+        "domains":            [c["domain"] for c in candidates],
+        "keyword_map":        {c["domain"]: c["matched_keyword"] for c in candidates},
+        "historical_meta":    historical_meta,
+        "total":              len(candidates),
+        "total_historical":   len(historical_cands),
+        "total_combos":       len(combo_cands),
+        "keywords":           seeds,
     }
 
 
