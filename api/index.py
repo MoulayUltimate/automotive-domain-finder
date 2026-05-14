@@ -305,6 +305,32 @@ async def seo_step(req: SEORequest, _user: dict = Depends(get_current_user)):
         return {"signals": signals, "total": len(signals)}
 
     signals = estimate_seo_bulk(domains, workers=req.workers, deep=req.deep_seo)
+
+    # ── Free fallback for backlink signals ────────────────────────────────────
+    # If the caller didn't supply a Majestic key, every Majestic field will be
+    # zero in `signals` — fill them in using the free Majestic Million CSV
+    # (lazy-loaded once per warm container, 24h cache in /tmp).
+    if not req.majestic_key.strip():
+        try:
+            from modules.free_backlinks import lookup_bulk as mm_bulk  # noqa: PLC0415
+            mm = mm_bulk(domains)
+            for s in signals:
+                rec = mm.get(s.get("domain", ""))
+                if not rec:
+                    continue
+                # Only overwrite if existing values are zero (don't clobber a
+                # real Majestic response that happened to be 0).
+                if not s.get("backlinks"):     s["backlinks"]     = rec["backlinks"]
+                if not s.get("ref_domains"):   s["ref_domains"]   = rec["ref_domains"]
+                if not s.get("trust_flow"):    s["trust_flow"]    = rec["trust_flow"]
+                if not s.get("citation_flow"): s["citation_flow"] = rec["citation_flow"]
+                s["global_rank"]      = rec["global_rank"]
+                s["backlinks_source"] = rec["backlinks_source"]
+        except Exception as e:
+            # Never let the free fallback break the pipeline
+            import logging
+            logging.getLogger("api").warning("free_backlinks fallback failed: %s", e)
+
     return {"signals": signals, "total": len(signals)}
 
 

@@ -187,11 +187,11 @@
         </label>
         <input x-model="apiKeys.oprKey"     type="password" placeholder="OpenPageRank key"
                class="w-full rounded-md bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs placeholder-slate-500 focus:border-brand focus:outline-none" />
-        <input x-model="apiKeys.majesticKey" type="password" placeholder="Majestic key"
+        <input x-model="apiKeys.majesticKey" type="password" placeholder="Majestic key (optional — free fallback used if blank)"
                class="w-full rounded-md bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs placeholder-slate-500 focus:border-brand focus:outline-none" />
         <p class="text-[11px] text-slate-500">
-          WhoisXML confirms availability + gives accurate expiry/drop dates.
-          Used only on domains that pass the cheap RDAP pass, so credits aren't wasted.
+          • WhoisXML confirms availability + accurate expiry dates (uses your credits sparingly).<br>
+          • Majestic blank → free Majestic Million CSV is used for ref_domains / authority signals.
         </p>
       </section>
 
