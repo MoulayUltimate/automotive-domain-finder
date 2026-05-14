@@ -330,22 +330,24 @@ function kwApp() {
     ],
 
     init() {
-      this._authToken = localStorage.getItem('adf_token') || null;
-      const raw = localStorage.getItem('adf_user');
-      this.authUser = raw ? JSON.parse(raw) : null;
+      // Read the same {token, user} blob the rest of the app uses
+      let auth = null;
+      try { auth = JSON.parse(localStorage.getItem('adf_auth') || 'null'); } catch {}
+      this._authToken = auth && auth.token ? auth.token : null;
+      this.authUser   = auth && auth.user  ? auth.user  : null;
       if (!this._authToken) { window.location.href = '/login.html'; return; }
+
       // Restore API keys from previous session
       try {
         const saved = JSON.parse(localStorage.getItem('adf_apikeys') || '{}');
         this.apiKeys = { ...this.apiKeys, ...saved };
       } catch {}
-      // Persist on change
+      // Persist API keys on change
       this.$watch && this.$watch('apiKeys', v => localStorage.setItem('adf_apikeys', JSON.stringify(v)));
     },
 
     signOut() {
-      localStorage.removeItem('adf_token');
-      localStorage.removeItem('adf_user');
+      localStorage.removeItem('adf_auth');
       window.location.href = '/login.html';
     },
 
