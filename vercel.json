@@ -15,6 +15,8 @@
     { "src": "/api/(.*)",  "dest": "/api/index.py" },
     { "src": "/login",     "dest": "/login.html"   },
     { "src": "/admin",     "dest": "/admin.html"   },
+    { "src": "/keyword",   "dest": "/keyword.html" },
+    { "src": "/keywords",  "dest": "/keyword.html" },
     { "src": "/(.+\\.html)","dest": "/$1"          },
     { "src": "/(.*)",      "dest": "/index.html"   }
   ]
