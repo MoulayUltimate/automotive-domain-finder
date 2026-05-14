@@ -376,6 +376,219 @@ async def score_step(req: ScoreRequest, _user: dict = Depends(get_current_user))
     return {"scored": scored, "total": len(scored)}
 
 
+# ── /api/keyword-generate ────────────────────────────────────────────────────
+#
+# Step 1 of the keyword-based expired-domain finder.
+# Takes a list of seed keywords and returns candidate domains built from
+# keyword + prefix/suffix/combination patterns.  Downstream the SPA feeds
+# these into /api/check → /api/seo → /api/score for the full pipeline.
+
+class KeywordGenerateRequest(BaseModel):
+    keywords:        list[str]
+    tlds:            list[str] | None = None
+    max_per_keyword: int  = Field(default=200, ge=10, le=600)
+    include_combos:  bool = True
+
+
+@app.post("/api/keyword-generate")
+async def keyword_generate_step(
+    req: KeywordGenerateRequest,
+    _user: dict = Depends(get_current_user),
+):
+    from modules.keyword_generator import generate_candidates  # noqa: PLC0415
+
+    seeds = [k.strip() for k in req.keywords if k.strip()]
+    if not seeds:
+        raise HTTPException(status_code=422, detail="No keywords provided.")
+
+    candidates = generate_candidates(
+        seeds,
+        tlds=req.tlds,
+        max_per_keyword=req.max_per_keyword,
+        include_combos=req.include_combos,
+    )
+    # Build a quick lookup so the SPA can attach matched_keyword to each
+    # available domain after /api/check returns.
+    return {
+        "candidates":   candidates,
+        "domains":      [c["domain"] for c in candidates],
+        "keyword_map":  {c["domain"]: c["matched_keyword"] for c in candidates},
+        "total":        len(candidates),
+        "keywords":     seeds,
+    }
+
+
+# ── /api/freshness ───────────────────────────────────────────────────────────
+#
+# Lightweight filter: takes the `available` list returned by /api/check and
+# drops any domain whose RDAP expiry is older than `max_months` (default 24).
+# Domains with no expiry date are kept by default (set `require_expiry=true`
+# to drop them).
+
+class FreshnessRequest(BaseModel):
+    available:        list[dict]
+    max_months:       int  = Field(default=24, ge=1, le=120)
+    require_expiry:   bool = False
+
+
+@app.post("/api/freshness")
+async def freshness_step(
+    req: FreshnessRequest,
+    _user: dict = Depends(get_current_user),
+):
+    from modules.keyword_generator import is_recently_expired  # noqa: PLC0415
+
+    fresh: list[dict] = []
+    stale: list[dict] = []
+    unknown: list[dict] = []
+
+    for row in req.available:
+        exp = row.get("expiry_date") or ""
+        if not exp:
+            (stale if req.require_expiry else unknown).append(row)
+            continue
+        (fresh if is_recently_expired(exp, req.max_months) else stale).append(row)
+
+    return {
+        "fresh":   fresh + unknown,   # caller treats unknown-expiry as kept
+        "stale":   stale,
+        "total_in":  len(req.available),
+        "total_fresh": len(fresh) + len(unknown),
+    }
+
+
+# ── /api/keyword-score ───────────────────────────────────────────────────────
+#
+# Final quality + traffic-potential scoring for the keyword finder.
+# Operates on the merged signal list (post-SEO).  Computes:
+#
+#   • traffic_potential = ref_domains*0.4 + indexed_pages*0.3 +
+#                         recent_snapshots*0.2 + authority*0.1
+#   • quality_score     = authority*2 + live_backlinks*3 +
+#                         recent_archive_bonus*5 + keyword_match_bonus*2 -
+#                         spam_penalty*10
+#
+# Spam patterns (casino/pharma/adult/etc.) are already filtered upstream by
+# modules/scorer.py — this endpoint applies one more pass and ranks results.
+
+class KeywordScoreRequest(BaseModel):
+    signals:           list[dict]
+    keyword_map:       dict[str, str] = {}
+    min_authority:     int = Field(default=0,  ge=0, le=100)
+    min_backlinks:     int = Field(default=0,  ge=0)
+    max_spam_score:    int = Field(default=70, ge=0, le=100)
+    recently_dropped:  bool = False
+    only_available:    bool = True
+
+
+@app.post("/api/keyword-score")
+async def keyword_score_step(
+    req: KeywordScoreRequest,
+    _user: dict = Depends(get_current_user),
+):
+    import re as _re
+
+    SPAM_ANCHOR = _re.compile(
+        r"(casino|poker|viagra|pharma|cialis|loan|payday|"
+        r"bet(t?ing)?|porn|adult|xxx|escort|gambl|crypto-?pump)",
+        _re.I,
+    )
+
+    out: list[dict] = []
+    for sig in req.signals:
+        d        = (sig.get("domain") or "").lower()
+        kw       = req.keyword_map.get(d, sig.get("matched_keyword", ""))
+        opr      = int(sig.get("page_rank_integer", 0) or 0)
+        da       = int(sig.get("domain_authority",  0) or 0)
+        cf       = int(sig.get("citation_flow",     0) or 0)
+        bl       = int(sig.get("backlinks",         0) or 0)
+        refd     = int(sig.get("ref_domains",       0) or 0)
+        wb_total = int(sig.get("wayback_snapshots", 0) or 0)
+        wb_last  = (sig.get("wayback_last_seen") or "")[:4]
+        indexed  = bool(sig.get("is_indexed_ddg") or sig.get("in_commoncrawl"))
+
+        # Authority — prefer Moz DA, then OPR×10, then Citation Flow
+        authority = da if da > 0 else (opr * 10 if opr > 0 else cf)
+
+        # Recent-archive bonus: archive activity within last 2 years
+        try:
+            wb_year = int(wb_last) if wb_last.isdigit() else 0
+        except ValueError:
+            wb_year = 0
+        from datetime import datetime
+        this_year = datetime.utcnow().year
+        recent_archive_bonus = 1 if (this_year - wb_year) <= 2 and wb_year else 0
+
+        # Keyword match: stem of domain contains a seed keyword
+        stem = d.split(".")[0]
+        keyword_match_bonus = 0
+        if kw:
+            for tok in kw.replace("+", " ").split():
+                if tok and tok in stem:
+                    keyword_match_bonus = 1
+                    break
+
+        # Spam penalty: anchor text from backlink scanner (if present) or
+        # spammy stem characters
+        spam_penalty = 0
+        anchors = sig.get("anchor_text") or sig.get("anchors") or []
+        if isinstance(anchors, list):
+            for a in anchors:
+                if isinstance(a, str) and SPAM_ANCHOR.search(a):
+                    spam_penalty += 1
+        if SPAM_ANCHOR.search(stem):
+            spam_penalty += 2
+
+        # Indexed-pages proxy: Wayback snapshots scaled, capped at 50
+        indexed_pages = min(wb_total // 4, 50) + (10 if indexed else 0)
+
+        # Recent snapshots proxy: 1 if archived within 2 years and has ≥5 snaps
+        recent_snapshots = 5 if (recent_archive_bonus and wb_total >= 5) else 0
+
+        traffic_potential = round(
+            refd * 0.4 + indexed_pages * 0.3 + recent_snapshots * 0.2 + authority * 0.1,
+            1,
+        )
+
+        quality_score = (
+            authority * 2
+            + min(bl, 5000) * 3 / 100        # scale backlinks so they don't dominate
+            + recent_archive_bonus * 5
+            + keyword_match_bonus * 2
+            - spam_penalty * 10
+        )
+        quality_score = max(0, round(quality_score, 1))
+
+        # Spam score 0–100 (rough estimate)
+        spam_score = min(100, spam_penalty * 25)
+
+        # Apply filters
+        if req.only_available and not sig.get("available", True):
+            continue
+        if authority < req.min_authority:
+            continue
+        if bl < req.min_backlinks:
+            continue
+        if spam_score > req.max_spam_score:
+            continue
+
+        out.append({
+            **sig,
+            "matched_keyword":    kw,
+            "authority":          authority,
+            "live_backlinks":     bl,
+            "ref_domains":        refd,
+            "archive_freshness":  wb_last or "unknown",
+            "recent_archive":    bool(recent_archive_bonus),
+            "traffic_potential":  traffic_potential,
+            "spam_score":         spam_score,
+            "quality_score":      quality_score,
+        })
+
+    out.sort(key=lambda r: (-r["quality_score"], -r["traffic_potential"]))
+    return {"scored": out, "total": len(out)}
+
+
 # ── /api/history ──────────────────────────────────────────────────────────────
 
 class HistoryRequest(BaseModel):
