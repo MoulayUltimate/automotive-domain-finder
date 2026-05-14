@@ -153,16 +153,46 @@
           <input type="checkbox" x-model="filters.skipSEO" class="accent-brand" />
           <span>Skip SEO step (faster, fewer signals)</span>
         </label>
+
+        <!-- WhoisXML credit-conservation controls -->
+        <div class="pt-3 mt-3 border-t border-slate-800 space-y-2">
+          <label class="flex items-center gap-2 text-xs">
+            <input type="checkbox" x-model="filters.useWhoisXML" class="accent-emerald-500" />
+            <span class="font-medium text-emerald-400">Use WhoisXML enrichment</span>
+          </label>
+          <p class="text-[11px] text-slate-500 -mt-1">
+            Off by default — your 500 free credits stay reserved for urgent runs.
+            Only enables when you really need confirmed expiry dates + registrar history.
+          </p>
+          <template x-if="filters.useWhoisXML">
+            <div>
+              <label class="flex justify-between text-xs text-slate-400">
+                <span>Max credits per run</span>
+                <span class="text-emerald-300" x-text="filters.whoisxmlMax + ' domains'"></span>
+              </label>
+              <input type="range" min="10" max="200" step="10" x-model.number="filters.whoisxmlMax" class="w-full" />
+              <p class="text-[11px] text-slate-500" x-text="`≈ ${filters.whoisxmlMax} credits — leaves ${500 - filters.whoisxmlMax} of your free 500 tier`"></p>
+            </div>
+          </template>
+        </div>
       </section>
 
       <!-- API keys (optional) -->
       <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 space-y-2 text-sm">
-        <h2 class="text-sm font-semibold text-slate-200">API keys (optional)</h2>
+        <h2 class="text-sm font-semibold text-slate-200">API keys</h2>
+        <label class="block">
+          <span class="text-[11px] text-emerald-400 font-medium">WhoisXML API key (recommended)</span>
+          <input x-model="apiKeys.whoisxmlKey" type="password" placeholder="at_xxxxxxxxxxxxxxxx"
+                 class="mt-0.5 w-full rounded-md bg-slate-950 border border-emerald-700/40 px-2.5 py-1.5 text-xs placeholder-slate-500 focus:border-emerald-500 focus:outline-none" />
+        </label>
         <input x-model="apiKeys.oprKey"     type="password" placeholder="OpenPageRank key"
                class="w-full rounded-md bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs placeholder-slate-500 focus:border-brand focus:outline-none" />
         <input x-model="apiKeys.majesticKey" type="password" placeholder="Majestic key"
                class="w-full rounded-md bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs placeholder-slate-500 focus:border-brand focus:outline-none" />
-        <p class="text-[11px] text-slate-500">Without keys: Wayback + RDAP only (free, but lower-quality scores).</p>
+        <p class="text-[11px] text-slate-500">
+          WhoisXML confirms availability + gives accurate expiry/drop dates.
+          Used only on domains that pass the cheap RDAP pass, so credits aren't wasted.
+        </p>
       </section>
 
       <button @click="run()" :disabled="running || !keywords.length"
@@ -220,6 +250,8 @@
                 <th class="px-3 py-2 text-left">Keyword</th>
                 <th class="px-3 py-2 text-left">Status</th>
                 <th class="px-3 py-2 text-left">Expiry</th>
+                <th class="px-3 py-2 text-left">Created</th>
+                <th class="px-3 py-2 text-left">Registrar</th>
                 <th class="px-3 py-2 text-right">Authority</th>
                 <th class="px-3 py-2 text-right">Backlinks</th>
                 <th class="px-3 py-2 text-left">Archive</th>
@@ -238,7 +270,9 @@
                           :class="r.available ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'"
                           x-text="r.available ? 'available' : 'taken'"></span>
                   </td>
-                  <td class="px-3 py-1.5 text-slate-400" x-text="(r.expiry_date||'').slice(0,10) || '—'"></td>
+                  <td class="px-3 py-1.5 text-slate-400" x-text="(r.expires_date || (r.expiry_date||'')).slice(0,10) || '—'"></td>
+                  <td class="px-3 py-1.5 text-slate-400" x-text="(r.created_date||'').slice(0,10) || '—'"></td>
+                  <td class="px-3 py-1.5 text-slate-400 truncate max-w-[140px]" :title="r.registrar||''" x-text="r.registrar || '—'"></td>
                   <td class="px-3 py-1.5 text-right" x-text="r.authority"></td>
                   <td class="px-3 py-1.5 text-right" x-text="(r.live_backlinks||0).toLocaleString()"></td>
                   <td class="px-3 py-1.5 text-slate-400" x-text="(r.archive_freshness||'—')"></td>
@@ -280,16 +314,19 @@ function kwApp() {
       recentArchiveOnly:  false,
       onlyAvailable:      true,
       skipSEO:            false,
+      useWhoisXML:        false,   // OFF by default — preserves free 500-credit budget
+      whoisxmlMax:        50,      // hard cap per run when enabled
     },
 
-    apiKeys: { oprKey: '', majesticKey: '' },
+    apiKeys: { whoisxmlKey: '', oprKey: '', majesticKey: '' },
 
     steps: [
-      { label: 'Generate candidates',    status: 'pending', detail: '' },
-      { label: 'Check availability',     status: 'pending', detail: '' },
-      { label: 'Freshness filter',       status: 'pending', detail: '' },
-      { label: 'SEO + backlink signals', status: 'pending', detail: '' },
-      { label: 'Quality + traffic score',status: 'pending', detail: '' },
+      { label: 'Generate candidates',          status: 'pending', detail: '' },
+      { label: 'Check availability (RDAP)',    status: 'pending', detail: '' },
+      { label: 'WhoisXML enrichment',          status: 'pending', detail: '' },
+      { label: 'Freshness filter',             status: 'pending', detail: '' },
+      { label: 'SEO + backlink signals',       status: 'pending', detail: '' },
+      { label: 'Quality + traffic score',      status: 'pending', detail: '' },
     ],
 
     init() {
@@ -297,6 +334,13 @@ function kwApp() {
       const raw = localStorage.getItem('adf_user');
       this.authUser = raw ? JSON.parse(raw) : null;
       if (!this._authToken) { window.location.href = '/login.html'; return; }
+      // Restore API keys from previous session
+      try {
+        const saved = JSON.parse(localStorage.getItem('adf_apikeys') || '{}');
+        this.apiKeys = { ...this.apiKeys, ...saved };
+      } catch {}
+      // Persist on change
+      this.$watch && this.$watch('apiKeys', v => localStorage.setItem('adf_apikeys', JSON.stringify(v)));
     },
 
     signOut() {
@@ -347,30 +391,80 @@ function kwApp() {
 
         if (!available.length) { this.completed = true; return; }
 
-        // Step 3 — freshness filter
+        // Step 3 — WhoisXML enrichment (OFF by default; on demand only)
         this.steps[2].status = 'running';
+        let enrichedByDomain = {};
+        const useWX = this.filters.useWhoisXML
+                   && (this.apiKeys.whoisxmlKey || '').trim().length > 0;
+        if (!useWX) {
+          this.steps[2].status = 'done';
+          this.steps[2].detail = 'Skipped — toggle off (free credits preserved)';
+        } else {
+          // Cap to whoisxmlMax to protect the 500-credit budget
+          const cap = Math.max(1, this.filters.whoisxmlMax | 0);
+          const toEnrich = available.slice(0, cap).map(r => r.domain);
+          try {
+            const wx = await this._call('/api/whoisxml', {
+              domains:         toEnrich,
+              whoisxml_key:    (this.apiKeys.whoisxmlKey || '').trim(),
+              workers:         6,
+              request_timeout: 12,
+            });
+            enrichedByDomain = wx.by_domain || {};
+            // Merge enriched fields back into the available rows
+            for (const a of available) {
+              const e = enrichedByDomain[a.domain];
+              if (!e) continue;
+              a.expires_date          = e.expires_date || a.expiry_date || '';
+              a.created_date          = e.created_date || '';
+              a.registrar             = e.registrar || a.registrar || '';
+              a.estimated_age_years   = e.estimated_age_years || 0;
+              a.whoisxml_availability = e.whoisxml_availability || '';
+            }
+            this.steps[2].status = 'done';
+            this.steps[2].detail =
+              `${wx.confirmed_available} confirmed · ${wx.total} credits used`
+              + (available.length > cap ? ` (capped at ${cap} — ${available.length - cap} domains used RDAP only)` : '')
+              + (wx.errors ? ` · ${wx.errors} errors` : '');
+          } catch (e) {
+            this.steps[2].status = 'error';
+            this.steps[2].detail = `WhoisXML failed: ${e.message} — falling back to RDAP data`;
+          }
+        }
+
+        // Step 4 — freshness filter (uses WhoisXML expires_date if available, else RDAP)
+        this.steps[3].status = 'running';
         const fr = await this._call('/api/freshness', {
           available,  max_months: this.filters.maxMonths, require_expiry: false,
         });
-        this.steps[2].status = 'done';
-        this.steps[2].detail = `${fr.total_fresh} fresh / ${fr.total_in - fr.total_fresh} stale dropped`;
+        this.steps[3].status = 'done';
+        this.steps[3].detail = `${fr.total_fresh} fresh / ${fr.total_in - fr.total_fresh} stale dropped`;
         if (!fr.fresh.length) { this.completed = true; return; }
 
         const freshDomains = fr.fresh.map(r => r.domain);
-        const expiryMap = Object.fromEntries(fr.fresh.map(r => [r.domain, r.expiry_date || '']));
+        const expiryMap = Object.fromEntries(
+          fr.fresh.map(r => [r.domain, r.expires_date || r.expiry_date || ''])
+        );
 
-        // Step 4 — SEO signals
-        this.steps[3].status = 'running';
-        const seoSignals = await this._runSeo(freshDomains, 10);
-        this.steps[3].status = 'done';
-        this.steps[3].detail = `${seoSignals.length} signals collected`;
-
-        // Step 5 — quality + traffic scoring
+        // Step 5 — SEO signals
         this.steps[4].status = 'running';
+        const seoSignals = await this._runSeo(freshDomains, 10);
+        this.steps[4].status = 'done';
+        this.steps[4].detail = `${seoSignals.length} signals collected`;
+
+        // Step 6 — quality + traffic scoring (enrich rows with WhoisXML data)
+        this.steps[5].status = 'running';
         for (const s of seoSignals) {
           s.expiry_date     = expiryMap[s.domain] || '';
           s.available       = true;
           s.matched_keyword = gen.keyword_map[s.domain] || '';
+          const e = enrichedByDomain[s.domain];
+          if (e) {
+            s.created_date          = e.created_date || '';
+            s.registrar             = e.registrar || '';
+            s.estimated_age_years   = e.estimated_age_years || 0;
+            s.whoisxml_availability = e.whoisxml_availability || '';
+          }
         }
         const sc = await this._call('/api/keyword-score', {
           signals:          seoSignals,
@@ -383,8 +477,8 @@ function kwApp() {
         let rows = sc.scored;
         if (this.filters.recentArchiveOnly) rows = rows.filter(r => r.recent_archive);
         this.results = rows;
-        this.steps[4].status = 'done';
-        this.steps[4].detail = `${rows.length} domains passed filters`;
+        this.steps[5].status = 'done';
+        this.steps[5].detail = `${rows.length} domains passed filters`;
       } catch (e) {
         this.error = e.message || String(e);
         for (const s of this.steps) if (s.status === 'running') s.status = 'error';
@@ -456,7 +550,7 @@ function kwApp() {
           }
         }
         processed += batch.length;
-        this.steps[3].detail = `SEO ${processed}/${domains.length}${timeouts ? ` · ${timeouts} timeouts` : ''}`;
+        this.steps[4].detail = `SEO ${processed}/${domains.length}${timeouts ? ` · ${timeouts} timeouts` : ''}`;
       };
 
       await Promise.all(Array.from({ length: concurrency }, async () => {
@@ -484,7 +578,7 @@ function kwApp() {
     },
 
     exportCSV() {
-      const cols = ['domain','matched_keyword','available','expiry_date','authority','live_backlinks','ref_domains','archive_freshness','traffic_potential','spam_score','quality_score'];
+      const cols = ['domain','matched_keyword','available','whoisxml_availability','expires_date','created_date','registrar','estimated_age_years','authority','live_backlinks','ref_domains','archive_freshness','traffic_potential','spam_score','quality_score'];
       const header = cols.join(',');
       const rows = this.results.map(r => cols.map(c => {
         const v = r[c] == null ? '' : String(r[c]).replace(/"/g, '""');

@@ -376,6 +376,64 @@ async def score_step(req: ScoreRequest, _user: dict = Depends(get_current_user))
     return {"scored": scored, "total": len(scored)}
 
 
+# ── /api/whoisxml ────────────────────────────────────────────────────────────
+#
+# WhoisXML enrichment pass — call this on the *small* set of domains that
+# already passed the cheap RDAP availability check, so we don't burn 1000+
+# credits on the full candidate pool.
+#
+# Returns one row per domain:
+#   whoisxml_availability  AVAILABLE | UNAVAILABLE | UNDETERMINED
+#   expires_date           YYYY-MM-DD
+#   created_date           YYYY-MM-DD
+#   updated_date           YYYY-MM-DD
+#   registrar              str
+#   estimated_age_days     int
+#   estimated_age_years    float
+#   name_servers           list[str]
+#   status                 list[str]    raw WHOIS status flags
+#   error                  str          set if the call failed (rate_limited, http_403…)
+
+class WhoisxmlRequest(BaseModel):
+    domains:         list[str]
+    whoisxml_key:    str
+    workers:         int = Field(default=6, ge=1, le=12)
+    request_timeout: int = Field(default=12, ge=3, le=30)
+
+
+@app.post("/api/whoisxml")
+async def whoisxml_step(
+    req: WhoisxmlRequest,
+    _user: dict = Depends(get_current_user),
+):
+    from modules.whoisxml import lookup_bulk  # noqa: PLC0415
+
+    domains = [d.strip().lower() for d in req.domains if d.strip()]
+    if not domains:
+        raise HTTPException(status_code=422, detail="No domains provided.")
+    if not req.whoisxml_key.strip():
+        raise HTTPException(status_code=422, detail="WhoisXML API key required.")
+
+    rows = lookup_bulk(
+        domains, req.whoisxml_key.strip(),
+        workers=req.workers, timeout=req.request_timeout,
+    )
+    by_domain = {r["domain"]: r for r in rows}
+
+    confirmed_available = sum(
+        1 for r in rows if r.get("whoisxml_availability") == "AVAILABLE"
+    )
+    errors = sum(1 for r in rows if r.get("error"))
+
+    return {
+        "rows":                rows,
+        "by_domain":           by_domain,
+        "total":               len(rows),
+        "confirmed_available": confirmed_available,
+        "errors":              errors,
+    }
+
+
 # ── /api/keyword-generate ────────────────────────────────────────────────────
 #
 # Step 1 of the keyword-based expired-domain finder.
@@ -443,7 +501,8 @@ async def freshness_step(
     unknown: list[dict] = []
 
     for row in req.available:
-        exp = row.get("expiry_date") or ""
+        # Prefer WhoisXML-enriched expires_date (YYYY-MM-DD) over RDAP expiry_date
+        exp = (row.get("expires_date") or row.get("expiry_date") or "").strip()
         if not exp:
             (stale if req.require_expiry else unknown).append(row)
             continue
