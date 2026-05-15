@@ -678,11 +678,44 @@ function app() {
       } catch (_) {
         localStorage.removeItem('adf_auth');
         window.location.href = '/login.html';
+        return;
       }
+
+      // Hydrate API keys from cache for instant display
+      try {
+        const cached = JSON.parse(localStorage.getItem('adf_apikeys') || '{}');
+        this.apiKeys = { ...this.apiKeys, ...cached };
+      } catch {}
+
+      // Then fetch authoritative copy from the user's profile
+      this._loadKeysFromServer();
+
+      // Persist any change — local immediately, server debounced
+      this.$watch && this.$watch('apiKeys', v => {
+        localStorage.setItem('adf_apikeys', JSON.stringify(v));
+        clearTimeout(this._keysSaveTimer);
+        this._keysSaveTimer = setTimeout(() => this._saveKeysToServer(v), 800);
+      });
+    },
+
+    async _loadKeysFromServer() {
+      try {
+        const r = await this._call('/api/auth/keys', null, 'GET');
+        if (r && r.keys && Object.keys(r.keys).length) {
+          this.apiKeys = { ...this.apiKeys, ...r.keys };
+          localStorage.setItem('adf_apikeys', JSON.stringify(this.apiKeys));
+        }
+      } catch (e) { console.warn('Could not load saved keys:', e.message); }
+    },
+
+    async _saveKeysToServer(keys) {
+      try { await this._call('/api/auth/keys', { keys }); }
+      catch (e) { console.warn('Could not save keys:', e.message); }
     },
 
     authSignOut() {
       localStorage.removeItem('adf_auth');
+      localStorage.removeItem('adf_apikeys');
       window.location.href = '/login.html';
     },
 
@@ -1130,15 +1163,16 @@ function app() {
       return results;
     },
 
-    async _call(url, body) {
+    async _call(url, body, method) {
       let res;
       const headers = { 'Content-Type': 'application/json' };
       if (this._authToken) headers['Authorization'] = `Bearer ${this._authToken}`;
+      const m = method || (body == null ? 'GET' : 'POST');
       try {
         res = await fetch(url, {
-          method:  'POST',
+          method:  m,
           headers,
-          body:    JSON.stringify(body),
+          body:    (m === 'GET' || body == null) ? undefined : JSON.stringify(body),
         });
       } catch (e) {
         throw new Error(`Network error reaching ${url}: ${e.message}`);

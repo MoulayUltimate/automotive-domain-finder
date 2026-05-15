@@ -360,17 +360,44 @@ function kwApp() {
       this.authUser   = auth && auth.user  ? auth.user  : null;
       if (!this._authToken) { window.location.href = '/login.html'; return; }
 
-      // Restore API keys from previous session
+      // Instant restore from cache (no network blink)
       try {
-        const saved = JSON.parse(localStorage.getItem('adf_apikeys') || '{}');
-        this.apiKeys = { ...this.apiKeys, ...saved };
+        const cached = JSON.parse(localStorage.getItem('adf_apikeys') || '{}');
+        this.apiKeys = { ...this.apiKeys, ...cached };
       } catch {}
-      // Persist API keys on change
-      this.$watch && this.$watch('apiKeys', v => localStorage.setItem('adf_apikeys', JSON.stringify(v)));
+
+      // Authoritative fetch from server profile → overrides cache if newer
+      this._loadKeysFromServer();
+
+      // Save to server (debounced) AND to local cache whenever apiKeys change
+      this.$watch && this.$watch('apiKeys', v => {
+        localStorage.setItem('adf_apikeys', JSON.stringify(v));
+        clearTimeout(this._keysSaveTimer);
+        this._keysSaveTimer = setTimeout(() => this._saveKeysToServer(v), 800);
+      });
+    },
+
+    async _loadKeysFromServer() {
+      try {
+        const r = await this._call('/api/auth/keys', null, 'GET');
+        if (r && r.keys && Object.keys(r.keys).length) {
+          this.apiKeys = { ...this.apiKeys, ...r.keys };
+          localStorage.setItem('adf_apikeys', JSON.stringify(this.apiKeys));
+        }
+      } catch (e) {
+        // Non-fatal — user can still type keys manually
+        console.warn('Could not load saved keys:', e.message);
+      }
+    },
+
+    async _saveKeysToServer(keys) {
+      try { await this._call('/api/auth/keys', { keys }); }
+      catch (e) { console.warn('Could not save keys:', e.message); }
     },
 
     signOut() {
       localStorage.removeItem('adf_auth');
+      localStorage.removeItem('adf_apikeys');
       window.location.href = '/login.html';
     },
 
@@ -601,12 +628,17 @@ function kwApp() {
       return out;
     },
 
-    async _call(url, body) {
+    async _call(url, body, method) {
       const headers = { 'Content-Type': 'application/json' };
       if (this._authToken) headers['Authorization'] = `Bearer ${this._authToken}`;
+      const m = method || (body == null ? 'GET' : 'POST');
       let res;
       try {
-        res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+        res = await fetch(url, {
+          method:  m,
+          headers,
+          body:    (m === 'GET' || body == null) ? undefined : JSON.stringify(body),
+        });
       } catch (e) {
         throw new Error(`Network error: ${e.message}`);
       }

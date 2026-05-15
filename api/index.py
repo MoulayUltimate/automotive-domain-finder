@@ -126,6 +126,49 @@ async def auth_me(user: dict = Depends(get_current_user)):
     return {"user": user}
 
 
+# ── /api/auth/keys ────────────────────────────────────────────────────────────
+#
+# Per-user API key vault. Keys are stored on the user record in the same
+# UserStore that holds the rest of the profile (file-backed by default,
+# Upstash Redis when configured). The browser fetches them after login
+# and pushes updates whenever the user edits a key — so they're typed once
+# and follow the user across devices/browsers.
+
+# Allowed API-key fields — explicit allowlist so a client can't stuff arbitrary
+# data into the user record by hitting this endpoint.
+ALLOWED_KEY_FIELDS = {
+    "whoisxmlKey", "oprKey", "majesticKey",
+    "mozId", "mozSecret", "ahrefsKey", "semrushKey",
+}
+
+
+class ApiKeysUpdate(BaseModel):
+    keys: dict[str, str]
+
+
+@app.get("/api/auth/keys")
+async def get_api_keys(user: dict = Depends(get_current_user)):
+    """Return the saved API keys for the current user (empty dict if none)."""
+    store = get_user_store()
+    raw = store.get_user(user["email"]) or {}
+    return {"keys": raw.get("api_keys", {}) or {}}
+
+
+@app.post("/api/auth/keys")
+async def set_api_keys(body: ApiKeysUpdate, user: dict = Depends(get_current_user)):
+    """Replace the current user's API-key bundle (allowlist enforced)."""
+    cleaned = {
+        k: str(v).strip()
+        for k, v in (body.keys or {}).items()
+        if k in ALLOWED_KEY_FIELDS and v
+    }
+    store = get_user_store()
+    updated = store.update_user(user["email"], api_keys=cleaned)
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return {"keys": cleaned, "saved": len(cleaned)}
+
+
 # ── /api/admin/users ──────────────────────────────────────────────────────────
 
 class RoleUpdate(BaseModel):
