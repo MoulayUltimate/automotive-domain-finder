@@ -195,6 +195,28 @@
             </div>
           </template>
         </div>
+
+        <!-- SE Ranking credit-conservation controls -->
+        <div class="pt-3 mt-3 border-t border-slate-800 space-y-2">
+          <label class="flex items-center gap-2 text-xs">
+            <input type="checkbox" x-model="filters.useSeranking" class="accent-sky-500" />
+            <span class="font-medium text-sky-400">Use SE Ranking authority + backlinks</span>
+          </label>
+          <p class="text-[11px] text-slate-500 -mt-1">
+            Pulls SE Ranking's 0–100 authority (domain_inlink_rank), referring domains,
+            total backlinks, and dofollow/nofollow split. Best single-number quality signal.
+          </p>
+          <template x-if="filters.useSeranking">
+            <div>
+              <label class="flex justify-between text-xs text-slate-400">
+                <span>Max domains per run</span>
+                <span class="text-sky-300" x-text="filters.serankingMax + ' domains'"></span>
+              </label>
+              <input type="range" min="10" max="300" step="10" x-model.number="filters.serankingMax" class="w-full" />
+              <p class="text-[11px] text-slate-500">≈ 1 unit per domain — SE Ranking caps at 100 per call (auto-batched).</p>
+            </div>
+          </template>
+        </div>
       </section>
 
       <!-- API keys (optional) -->
@@ -209,9 +231,15 @@
                class="w-full rounded-md bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs placeholder-slate-500 focus:border-brand focus:outline-none" />
         <input x-model="apiKeys.majesticKey" type="password" placeholder="Majestic key (optional — free fallback used if blank)"
                class="w-full rounded-md bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs placeholder-slate-500 focus:border-brand focus:outline-none" />
+        <label class="block">
+          <span class="text-[11px] text-sky-400 font-medium">SE Ranking API key (recommended)</span>
+          <input x-model="apiKeys.serankingKey" type="password" placeholder="SE Ranking token"
+                 class="mt-0.5 w-full rounded-md bg-slate-950 border border-sky-700/40 px-2.5 py-1.5 text-xs placeholder-slate-500 focus:border-sky-500 focus:outline-none" />
+        </label>
         <p class="text-[11px] text-slate-500">
           • WhoisXML confirms availability + accurate expiry dates (uses your credits sparingly).<br>
-          • Majestic blank → free Majestic Million CSV is used for ref_domains / authority signals.
+          • Majestic blank → free Majestic Million CSV is used for ref_domains / authority signals.<br>
+          • SE Ranking adds the strongest authority score we have access to (0–100).
         </p>
       </section>
 
@@ -339,14 +367,17 @@ function kwApp() {
       includeCombos:      true,    // generate prefix/suffix permutations
       useWhoisXML:        false,   // OFF by default — preserves free 500-credit budget
       whoisxmlMax:        50,      // hard cap per run when enabled
+      useSeranking:       false,   // OFF by default — SE Ranking units are paid
+      serankingMax:       50,      // hard cap per run when enabled
     },
 
-    apiKeys: { whoisxmlKey: '', oprKey: '', majesticKey: '' },
+    apiKeys: { whoisxmlKey: '', oprKey: '', majesticKey: '', serankingKey: '' },
 
     steps: [
       { label: 'Generate candidates',          status: 'pending', detail: '' },
       { label: 'Check availability (RDAP)',    status: 'pending', detail: '' },
       { label: 'WhoisXML enrichment',          status: 'pending', detail: '' },
+      { label: 'SE Ranking authority + backlinks', status: 'pending', detail: '' },
       { label: 'Freshness filter',             status: 'pending', detail: '' },
       { label: 'SEO + backlink signals',       status: 'pending', detail: '' },
       { label: 'Quality + traffic score',      status: 'pending', detail: '' },
@@ -490,13 +521,43 @@ function kwApp() {
           }
         }
 
-        // Step 4 — freshness filter (uses WhoisXML expires_date if available, else RDAP)
+        // Step 4 — SE Ranking authority + backlinks (OFF by default; on demand only)
         this.steps[3].status = 'running';
+        let serankingByDomain = {};
+        const useSR = this.filters.useSeranking
+                   && (this.apiKeys.serankingKey || '').trim().length > 0;
+        if (!useSR) {
+          this.steps[3].status = 'done';
+          this.steps[3].detail = 'Skipped — toggle off (paid units preserved)';
+        } else {
+          const cap = Math.max(1, this.filters.serankingMax | 0);
+          const toRank = available.slice(0, cap).map(r => r.domain);
+          try {
+            const sr = await this._call('/api/seranking', {
+              domains:       toRank,
+              seranking_key: (this.apiKeys.serankingKey || '').trim(),
+              mode:          'domain',
+              workers:       4,
+            });
+            serankingByDomain = sr.by_domain || {};
+            this.steps[3].status = 'done';
+            this.steps[3].detail =
+              `${sr.total} domains analyzed · authority + backlinks pulled`
+              + (available.length > cap ? ` (capped at ${cap})` : '')
+              + (sr.errors ? ` · ${sr.errors} errors` : '');
+          } catch (e) {
+            this.steps[3].status = 'error';
+            this.steps[3].detail = `SE Ranking failed: ${e.message} — continuing without`;
+          }
+        }
+
+        // Step 5 — freshness filter (uses WhoisXML expires_date if available, else RDAP)
+        this.steps[4].status = 'running';
         const fr = await this._call('/api/freshness', {
           available,  max_months: this.filters.maxMonths, require_expiry: false,
         });
-        this.steps[3].status = 'done';
-        this.steps[3].detail = `${fr.total_fresh} fresh / ${fr.total_in - fr.total_fresh} stale dropped`;
+        this.steps[4].status = 'done';
+        this.steps[4].detail = `${fr.total_fresh} fresh / ${fr.total_in - fr.total_fresh} stale dropped`;
         if (!fr.fresh.length) { this.completed = true; return; }
 
         const freshDomains = fr.fresh.map(r => r.domain);
@@ -504,14 +565,14 @@ function kwApp() {
           fr.fresh.map(r => [r.domain, r.expires_date || r.expiry_date || ''])
         );
 
-        // Step 5 — SEO signals
-        this.steps[4].status = 'running';
-        const seoSignals = await this._runSeo(freshDomains, 10);
-        this.steps[4].status = 'done';
-        this.steps[4].detail = `${seoSignals.length} signals collected`;
-
-        // Step 6 — quality + traffic scoring (enrich rows with WhoisXML + historical data)
+        // Step 6 — SEO signals
         this.steps[5].status = 'running';
+        const seoSignals = await this._runSeo(freshDomains, 10);
+        this.steps[5].status = 'done';
+        this.steps[5].detail = `${seoSignals.length} signals collected`;
+
+        // Step 7 — quality + traffic scoring (enrich rows with WhoisXML + SE Ranking + historical data)
+        this.steps[6].status = 'running';
         const histMeta = this._histMeta || {};
         for (const s of seoSignals) {
           s.expiry_date     = expiryMap[s.domain] || '';
@@ -534,6 +595,19 @@ function kwApp() {
             s.estimated_age_years   = e.estimated_age_years || 0;
             s.whoisxml_availability = e.whoisxml_availability || '';
           }
+
+          // SE Ranking overrides — its domain_inlink_rank (0-100) is the strongest
+          // authority signal we have, so prefer it whenever present.
+          const sr = serankingByDomain[s.domain];
+          if (sr && !sr.error) {
+            if (sr.domain_authority)   s.authority         = sr.domain_authority;
+            if (sr.domain_authority)   s.domain_authority  = sr.domain_authority;
+            if (sr.backlinks)          s.live_backlinks    = sr.backlinks;
+            if (sr.ref_domains)        s.ref_domains       = sr.ref_domains;
+            if (sr.dofollow_backlinks) s.dofollow_backlinks = sr.dofollow_backlinks;
+            if (sr.nofollow_backlinks) s.nofollow_backlinks = sr.nofollow_backlinks;
+            s.seranking_source = true;
+          }
         }
         const sc = await this._call('/api/keyword-score', {
           signals:          seoSignals,
@@ -546,8 +620,8 @@ function kwApp() {
         let rows = sc.scored;
         if (this.filters.recentArchiveOnly) rows = rows.filter(r => r.recent_archive);
         this.results = rows;
-        this.steps[5].status = 'done';
-        this.steps[5].detail = `${rows.length} domains passed filters`;
+        this.steps[6].status = 'done';
+        this.steps[6].detail = `${rows.length} domains passed filters`;
       } catch (e) {
         this.error = e.message || String(e);
         for (const s of this.steps) if (s.status === 'running') s.status = 'error';
@@ -619,7 +693,7 @@ function kwApp() {
           }
         }
         processed += batch.length;
-        this.steps[4].detail = `SEO ${processed}/${domains.length}${timeouts ? ` · ${timeouts} timeouts` : ''}`;
+        this.steps[5].detail = `SEO ${processed}/${domains.length}${timeouts ? ` · ${timeouts} timeouts` : ''}`;
       };
 
       await Promise.all(Array.from({ length: concurrency }, async () => {

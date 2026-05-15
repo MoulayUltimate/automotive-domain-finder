@@ -139,6 +139,7 @@ async def auth_me(user: dict = Depends(get_current_user)):
 ALLOWED_KEY_FIELDS = {
     "whoisxmlKey", "oprKey", "majesticKey",
     "mozId", "mozSecret", "ahrefsKey", "semrushKey",
+    "serankingKey",
 }
 
 
@@ -500,6 +501,63 @@ async def whoisxml_step(
         "total":               len(rows),
         "confirmed_available": confirmed_available,
         "errors":              errors,
+    }
+
+
+# ── /api/seranking ───────────────────────────────────────────────────────────
+#
+# SE Ranking backlinks/summary enrichment.  Same credit-conservation pattern
+# as /api/whoisxml — call only on the small set that survives the cheap RDAP
+# availability pass so we don't waste paid credits on the full candidate pool.
+#
+# Maps SE Ranking's `domain_inlink_rank` (0–100) onto our existing
+# `domain_authority` field so it flows through the scorer unchanged.
+#
+# Returns one row per domain:
+#   domain                str
+#   domain_authority      int    SE Ranking's domain_inlink_rank (0-100)
+#   page_authority        int    page_inlink_rank
+#   backlinks             int
+#   ref_domains           int
+#   ref_ips               int
+#   dofollow_backlinks    int
+#   nofollow_backlinks    int
+#   first_seen            str    YYYY-MM-DD
+#   last_seen             str    YYYY-MM-DD
+#   error                 str    set if the call failed
+
+class SerankingRequest(BaseModel):
+    domains:       list[str]
+    seranking_key: str
+    mode:          str = "domain"
+    workers:       int = Field(default=4, ge=1, le=8)
+
+
+@app.post("/api/seranking")
+async def seranking_step(
+    req: SerankingRequest,
+    _user: dict = Depends(get_current_user),
+):
+    from modules.seranking import summary_bulk  # noqa: PLC0415
+
+    domains = [d.strip().lower() for d in req.domains if d.strip()]
+    if not domains:
+        raise HTTPException(status_code=422, detail="No domains provided.")
+    if not req.seranking_key.strip():
+        raise HTTPException(status_code=422, detail="SE Ranking API key required.")
+
+    rows = summary_bulk(
+        domains, req.seranking_key.strip(),
+        mode=req.mode, workers=req.workers,
+    )
+    by_domain = {r["domain"]: r for r in rows}
+    errors = sum(1 for r in rows if r.get("error"))
+
+    return {
+        "rows":      rows,
+        "by_domain": by_domain,
+        "total":     len(rows),
+        "errors":    errors,
     }
 
 
